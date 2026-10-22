@@ -52,3 +52,9 @@ def test_simulate_endpoint(analytics_client):
     body = resp.json()
     assert body["midfield_shift"] == 0.1 and body["midfield_sensitivity"]
     assert analytics_client.get("/simulate", params={"home": "Arsenal", "away": "Nowhere"}).status_code == 422
+
+
+def test_simulate_possession_shift(analytics_client):
+    resp = analytics_client.get("/simulate", params={"home": "Arsenal", "away": "Chelsea", "possession_shift": 8})
+    assert resp.status_code == 200
+    assert resp.json()["possession_shift"] == 8

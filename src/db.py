@@ -24,10 +24,21 @@ _MATCH_COLUMNS = {
     "as_shots": "AS",
     "hst": "HST",
     "ast": "AST",
+    "hcc": "HCC",
+    "acc": "ACC",
+    "hposs": "HPoss",
+    "aposs": "APoss",
     "b365h": "B365H",
     "b365d": "B365D",
     "b365a": "B365A",
 }
+
+
+_MATCH_COLUMN_TYPES = {
+    "match_date": "TEXT", "home_team": "TEXT", "away_team": "TEXT", "fthg": "INTEGER", "ftag": "INTEGER",
+    "ftr": "TEXT", "hs": "INTEGER", "as_shots": "INTEGER", "hst": "INTEGER", "ast": "INTEGER", "hcc": "INTEGER",
+    "acc": "INTEGER", "hposs": "REAL", "aposs": "REAL", "b365h": "REAL", "b365d": "REAL", "b365a": "REAL",
+}  # fmt: skip
 
 
 def _sql_value(value: Any) -> Any:
@@ -75,6 +86,10 @@ class DatabaseManager:
                     as_shots INTEGER,
                     hst INTEGER,
                     ast INTEGER,
+                    hcc INTEGER,
+                    acc INTEGER,
+                    hposs REAL,
+                    aposs REAL,
                     b365h REAL,
                     b365d REAL,
                     b365a REAL,
@@ -97,6 +112,11 @@ class DatabaseManager:
                 );
                 """
             )
+            # Databases created before possession / chances were tracked get the new columns added.
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(matches)")}
+            for col, sql_type in _MATCH_COLUMN_TYPES.items():
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE matches ADD COLUMN {col} {sql_type}")
 
     def save_matches(self, df: pd.DataFrame) -> int:
         """Upserts match records. Missing optional stats/odds are stored as NULL, never invented."""

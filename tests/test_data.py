@@ -55,3 +55,16 @@ def test_db_round_trip_keeps_missing_odds_null(tmp_path):
     loaded = db.load_matches()
     assert len(loaded) == 5
     assert loaded["B365H"].isna().sum() == 1
+
+
+def test_db_migrates_old_schema(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE matches (id INTEGER PRIMARY KEY, match_date TEXT, home_team TEXT, away_team TEXT)")
+    db = DatabaseManager(path)
+    df = generate_synthetic_matches(n_seasons=1).head(3)
+    db.save_matches(df)
+    loaded = db.load_matches()
+    assert loaded["HPoss"].notna().all() and loaded["HCC"].notna().all()

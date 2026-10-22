@@ -13,22 +13,36 @@ A machine learning and statistical modelling pipeline that predicts football mat
 ## 🧠 Team Units, Tactics & Matchup Simulation
 Measures each team's **attack**, **midfield** and **defence** across the season, pits them against each other, and simulates matchups thousands of times.
 
-* **Unit ratings (`src/team_ratings.py`)**: Three opponent-adjusted, time-decayed Poisson models (shots, shots on target, goals). Every team gets indices where **100 = league average**:
-  `attack`, `defence`, `midfield` (net shot-volume control), `chance_creation`, `shot_suppression`, `chance_quality`, `finishing`, `shot_quality_allowed`, `goalkeeping`. A team's expected goals splits exactly into *midfield/shot volume × chance quality × finishing*, so you can see which battle decides a match.
+* **Unit ratings (`src/team_ratings.py`)**: Opponent-adjusted, time-decayed models for chances created, shots, shots on target and goals, plus a possession model. Every team gets indices where **100 = league average**:
+  * **Attack**: goals *and* shots on target, blended 50/50 (`UNIT_CONFIG["attack_sot_weight"]`). Shots on target are far less noisy than goals, so the rating settles faster. On the synthetic data it tracks true attacking strength better than goals alone (rank correlation 0.91 vs 0.85). `goal_threat` and `shots_on_target` are also shown separately.
+  * **Midfield**: **chances created** won vs conceded combined with **possession share** (expected possession % against an average side). It falls back to shot volume if the data has neither.
+  * **Defence**: goals prevented, plus `chance_suppression`, `shot_quality_allowed` and `goalkeeping`.
+  
+  A team's expected goals splits exactly into *midfield (chances created) × chance quality (shots on target per chance) × finishing*, so you can see which battle decides a match.
 * **Season timeline**: Weekly walk-forward snapshots (each one uses only earlier matches) show how each unit evolved during the season.
 * **Tactical profiles (`src/tactics.py`)**: Style labels (dominant, reactive, counter-attacking, compact block, clinical/wasteful, physical…) from shot share, accuracy, conversion, corners and fouls, plus matchup notes.
 * **Players (`src/players.py`)**: Optional player-season CSV (`data/players.csv`, columns `player, team, position, minutes, goals, assists, shots, shots_on_target, key_passes, tackles, interceptions`). Players are rated per 90 within their position (50 = average), rolled up into team units, and **absences** change the simulation (weights in `PLAYER_CONFIG`). Each simulation also gives anytime-scorer probabilities.
-* **Monte Carlo simulator (`src/simulation.py`)**: Each simulated match draws shots → shots on target → goals for both sides. Output includes each attack's goal distribution (P(1+), P(2+), P(3+), 90th percentile), how each defence fares (clean sheet %, expected conceded vs its usual workload), the goals won or lost in midfield, unit-vs-unit battles, and a **midfield sensitivity** table showing how goals and results move if the midfield battle tilts.
+* **Possession → chances**: the model measures how much a team's chance ratio rises when it gets more possession than expected in a match (comparing each match with what was expected, so team quality doesn't bias it). This drives the possession "what if" analysis.
+* **Monte Carlo simulator (`src/simulation.py`)**: Each simulated match draws chances created → shots on target → goals for both sides. Output includes each attack's goal distribution (P(1+), P(2+), P(3+), 90th percentile), how each defence fares (clean sheet %, expected conceded vs its usual workload), the goals won or lost in midfield, unit-vs-unit battles, and a **possession sensitivity** table showing how chances, goals and results move if the home side has 5 or 10 points more or less possession.
 
 ```bash
 python -m scripts.simulate --home Arsenal --away Chelsea                       # full matchup simulation
-python -m scripts.simulate --home Arsenal --away Chelsea --home-absent "Arsenal FWD1" --midfield-shift 0.1
+python -m scripts.simulate --home Arsenal --away Chelsea --home-absent "Arsenal FWD1" --possession-shift 10
 python -m scripts.simulate --team Brighton                                     # season unit report + attack vs every defence
 python -m scripts.simulate --league                                            # unit ratings for all teams
 ```
-API: `/units`, `/teams/{team}/report`, `/teams/{team}/attack-vs-defences`, `/simulate?home=..&away=..&home_absent=..&midfield_shift=..`. The dashboard has a **Team Units & Simulation** tab.
+API: `/units`, `/teams/{team}/report`, `/teams/{team}/attack-vs-defences`, `/simulate?home=..&away=..&home_absent=..&possession_shift=..`. The dashboard has a **Team Units & Simulation** tab.
 
-> Without a player CSV, a synthetic squad table is generated for demonstration. Football-Data.co.uk files have no possession or player data, so "midfield" is measured through shot volume won and conceded.
+### Match data columns
+Possession and chances created are optional extra columns in the match CSV (Football-Data.co.uk files don't include them; sources such as FBref do):
+
+| Column | Meaning |
+|---|---|
+| `HPoss`, `APoss` | Home / away possession (% or 0-1 share) |
+| `HCC`, `ACC` | Home / away chances created (key passes / shot-creating actions) |
+| `HST`, `AST` | Shots on target (required) |
+
+Without `HPoss`/`HCC`, midfield is measured through shot volume won and conceded. Without a player CSV, a synthetic squad table is generated for demonstration.
 
 ## 📊 Evaluation
 `python -m scripts.train` writes `reports/cv_evaluation.json`, comparing every model **on the same out-of-sample matches**: the ensemble, gradient boosting alone, Dixon-Coles alone, a base-rate baseline and the de-vigged bookmaker market. Metrics: log loss, Ranked Probability Score (RPS), Brier score, accuracy and expected calibration error.

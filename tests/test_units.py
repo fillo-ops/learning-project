@@ -131,3 +131,62 @@ def test_team_report_and_attack_table(analytics):
     table = analytics.simulator.attack_vs_all_defences("Arsenal")
     assert len(table) == len(analytics.teams) - 1
     assert table["expected_goals"].is_monotonic_decreasing
+
+
+def test_midfield_uses_chances_and_possession(analytics):
+    r = analytics.ratings
+    assert r.volume_stat == "chances"
+    assert r.has_possession
+    assert set(r.midfield_components("Arsenal")) == {"chances_created_balance", "possession"}
+    table = r.league_table()
+    corr = spearmanr([table.at[t, "possession"] for t in MIDFIELD], list(MIDFIELD.values())).statistic
+    assert corr > 0.8
+    assert 40.0 < table["possession"].min() < table["possession"].max() < 70.0
+
+
+def test_possession_elasticity_is_recovered(analytics):
+    # The synthetic data moves the log chance ratio by 1.6 per unit of logit possession surprise.
+    assert 1.1 < analytics.ratings.possession_elasticity_ < 2.1
+
+
+def test_attack_blends_goals_and_shots_on_target(analytics):
+    r = analytics.ratings
+    profile = r.unit_profile("Liverpool")
+    g, t = r.layers_["goals"].gen["Liverpool"], r.layers_["sot"].gen["Liverpool"]
+    assert profile["attack"] == pytest.approx(100 * np.exp(0.5 * g + 0.5 * t), abs=0.1)
+    assert profile["goal_threat"] == pytest.approx(100 * np.exp(g), abs=0.1)
+    assert profile["shots_on_target"] == pytest.approx(100 * np.exp(t), abs=0.1)
+
+
+def test_possession_shift_drives_chances_and_goals(analytics):
+    sim = analytics.simulator
+    base = sim.side_rates("Arsenal", "Chelsea")
+    more = sim.side_rates("Arsenal", "Chelsea", possession_shift=10)
+    assert more["home"]["possession"] == pytest.approx(base["home"]["possession"] + 0.10)
+    assert more["home"]["volume"] > base["home"]["volume"]
+    assert more["away"]["volume"] < base["away"]["volume"]
+    res = analytics.simulate("Arsenal", "Chelsea", possession_shift=10)
+    assert (
+        res["home"]["attack"]["mean_goals"] > analytics.simulate("Arsenal", "Chelsea")["home"]["attack"]["mean_goals"]
+    )
+    table = sim.midfield_sensitivity("Arsenal", "Chelsea")
+    assert "possession_shift" in table and table["home_possession_pct"].is_monotonic_increasing
+
+
+def test_falls_back_to_shots_without_possession_or_chances(season_df):
+    from src.simulation import MatchSimulator
+
+    plain = season_df.drop(columns=["HCC", "ACC", "HPoss", "APoss"])
+    ratings = TeamUnitRatings().fit(plain)
+    assert ratings.volume_stat == "shots" and not ratings.has_possession
+    assert "possession" not in ratings.unit_profile("Arsenal")
+    sim = MatchSimulator(ratings, n_sims=2000)
+    assert "midfield_shift" in sim.midfield_sensitivity("Arsenal", "Chelsea")
+    with pytest.raises(ValueError, match="possession"):
+        sim.simulate("Arsenal", "Chelsea", possession_shift=5)
+
+
+def test_tactics_use_possession(analytics):
+    p = analytics.profiles
+    assert {"possession_pct", "chances_pg", "sot_pg"} <= set(p.columns)
+    assert p["possession_pct"].idxmax() in {"Manchester City", "Brighton", "Arsenal"}

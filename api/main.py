@@ -86,6 +86,7 @@ def simulate(
     home: str = Query(..., description="Home team name"),
     away: str = Query(..., description="Away team name"),
     midfield_shift: float = Query(0.0, ge=-1.0, le=1.0, description="Tilt the midfield battle (+ favours home)"),
+    possession_shift: float = Query(0.0, ge=-40.0, le=40.0, description="Extra possession points for the home side"),
     home_absent: Annotated[list[str] | None, Query(description="Unavailable home players")] = None,
     away_absent: Annotated[list[str] | None, Query(description="Unavailable away players")] = None,
 ) -> dict:
@@ -93,7 +94,12 @@ def simulate(
     analytics = get_analytics()
     try:
         result = analytics.simulate(
-            home, away, midfield_shift=midfield_shift, home_absent=home_absent, away_absent=away_absent
+            home,
+            away,
+            midfield_shift=midfield_shift,
+            possession_shift=possession_shift,
+            home_absent=home_absent,
+            away_absent=away_absent,
         )
         result["midfield_sensitivity"] = analytics.simulator.midfield_sensitivity(home, away).to_dict(orient="records")
     except ValueError as exc:

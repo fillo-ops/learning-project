@@ -27,6 +27,11 @@ MODEL_CONFIG = {
     "min_ev_threshold": 0.02,
 }
 
+UNIT_CONFIG = {
+    # Attack index = goals blended with shots on target; on-target counts are steadier than goals.
+    "attack_sot_weight": 0.5,
+}
+
 DEFAULT_PLAYERS_PATH = DATA_DIR / "players.csv"
 
 # How player absences translate into team-unit changes. These are modelling assumptions,

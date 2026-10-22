@@ -107,9 +107,19 @@ def generate_synthetic_matches(
                 book_p = book_p / book_p.sum() * margin
                 b365h, b365d, b365a = (round(float(1.0 / p), 2) for p in book_p)
 
-                # Shot volume is driven by the midfield battle; accuracy carries the rest of the goal rate.
-                shots_h = rng.poisson(np.exp(np.log(12.5) + 0.08 + 0.8 * mid_edge + 0.3 * (attack[hi] + defence[ai])))
-                shots_a = rng.poisson(np.exp(np.log(10.5) - 0.8 * mid_edge + 0.3 * (attack[ai] + defence[hi])))
+                # Midfield sets possession and chances created; an in-match possession swing
+                # (poss_shock) moves chances too, so possession -> chances is a real, learnable effect.
+                poss_shock = rng.normal(0.0, 0.3)
+                home_poss = 100.0 / (1.0 + np.exp(-(0.08 + 1.4 * mid_edge + poss_shock)))
+                cc_h = rng.poisson(
+                    np.exp(np.log(9.5) + 0.06 + 0.8 * mid_edge + 0.3 * (attack[hi] + defence[ai]) + 0.8 * poss_shock)
+                )
+                cc_a = rng.poisson(
+                    np.exp(np.log(8.0) - 0.8 * mid_edge + 0.3 * (attack[ai] + defence[hi]) - 0.8 * poss_shock)
+                )
+                # Shots = assisted chances plus some unassisted efforts
+                shots_h = cc_h + rng.poisson(3.5)
+                shots_a = cc_a + rng.poisson(3.0)
                 hst = max(fthg, int(rng.binomial(shots_h, np.clip(3.0 * lam / max(shots_h, 1), 0.15, 0.6))))
                 ast = max(ftag, int(rng.binomial(shots_a, np.clip(3.0 * mu / max(shots_a, 1), 0.15, 0.6))))
                 rows.append(
@@ -124,6 +134,10 @@ def generate_synthetic_matches(
                         "AS": max(int(shots_a), ast),
                         "HST": hst,
                         "AST": ast,
+                        "HPoss": round(home_poss, 1),
+                        "APoss": round(100.0 - home_poss, 1),
+                        "HCC": int(cc_h),
+                        "ACC": int(cc_a),
                         "HC": int(rng.poisson(0.42 * max(shots_h, 1))),
                         "AC": int(rng.poisson(0.42 * max(shots_a, 1))),
                         "HF": int(rng.poisson(np.exp(np.log(10.5) + aggression[hi]))),
