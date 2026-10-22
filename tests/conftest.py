@@ -14,3 +14,11 @@ def trained_engine(season_df):
     engine = MatchPredictorEngine(n_splits=3)
     engine.fit(season_df)
     return engine
+
+
+@pytest.fixture(scope="session")
+def analytics(season_df):
+    from src.analytics import TeamAnalytics
+    from src.synthetic import generate_synthetic_players
+
+    return TeamAnalytics(season_df, generate_synthetic_players(season_df), n_sims=20000)

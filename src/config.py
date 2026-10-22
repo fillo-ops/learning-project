@@ -27,6 +27,23 @@ MODEL_CONFIG = {
     "min_ev_threshold": 0.02,
 }
 
+DEFAULT_PLAYERS_PATH = DATA_DIR / "players.csv"
+
+# How player absences translate into team-unit changes. These are modelling assumptions,
+# not fitted values: tune them if you have data to calibrate against.
+PLAYER_CONFIG = {
+    "min_minutes": 270,  # players below this are rated but flagged as small-sample
+    "replacement_level": 0.6,  # a stand-in produces this fraction of the absent player's output
+    "midfield_weight": 0.5,  # share of a midfielder's absence felt in shot volume for/against
+    "defence_weight": 0.6,  # share of a defender's absence felt in opponent shots on target
+    "keeper_weight": 0.15,  # extra goals per shot on target conceded with the second-choice keeper
+}
+
+SIMULATION_CONFIG = {
+    "n_sims": 20000,
+    "performance_sd": 0.12,  # match-to-match noise on each side's shot volume (log scale)
+}
+
 
 def ensure_dirs() -> None:
     """Creates runtime output directories (kept out of import time on purpose)."""

@@ -10,14 +10,22 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
 
-from src.config import DEFAULT_CSV_PATH, DEFAULT_MODEL_PATH, MODEL_CONFIG, REPORTS_DIR, ensure_dirs
+from src.analytics import TeamAnalytics
+from src.config import (
+    DEFAULT_CSV_PATH,
+    DEFAULT_MODEL_PATH,
+    DEFAULT_PLAYERS_PATH,
+    MODEL_CONFIG,
+    REPORTS_DIR,
+    ensure_dirs,
+)
 from src.data_loader import DataLoader
 from src.db import DatabaseManager
 from src.dixon_coles import walk_forward_dc_probs
 from src.evaluate import TARGET_MAP, evaluate_predictions
 from src.features import DC_COLS, ELO_COLS, FEATURE_COLS, FORM_COLS, FeatureBuilder
 from src.model import MatchPredictorEngine, make_classifier
-from src.synthetic import generate_synthetic_matches
+from src.synthetic import generate_synthetic_matches, generate_synthetic_players
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +60,23 @@ def load_or_train(model_path: Path = DEFAULT_MODEL_PATH) -> MatchPredictorEngine
     if Path(model_path).exists():
         return MatchPredictorEngine.load(model_path)
     return run_full_pipeline(model_path=model_path)
+
+
+def load_analytics(
+    csv_path: Path = DEFAULT_CSV_PATH, players_path: Path = DEFAULT_PLAYERS_PATH, **simulator_kwargs
+) -> TeamAnalytics:
+    """Builds TeamAnalytics from the match CSV and the player CSV.
+
+    When no player CSV exists, a synthetic squad table is generated so the player
+    features can be demonstrated; pass real player data for real analysis.
+    """
+    matches = load_or_create_dataset(csv_path)
+    if Path(players_path).exists():
+        players = pd.read_csv(players_path)
+    else:
+        logger.warning("No player CSV at %s; using synthetic players for the demo", players_path)
+        players = generate_synthetic_players(matches)
+    return TeamAnalytics(matches, players, **simulator_kwargs)
 
 
 def run_ablation_study(df: pd.DataFrame, n_splits: int = MODEL_CONFIG["cv_splits"]) -> pd.DataFrame:
