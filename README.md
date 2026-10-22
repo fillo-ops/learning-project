@@ -1,40 +1,55 @@
 # ⚽ Football Match Predictor & Analytics Engine
 
-A modular machine learning and statistical modeling pipeline that predicts football match outcomes (Home Win, Draw, Away Win), exact scoreline distributions, and value edges against bookmaker odds.
+[![tests](https://github.com/fillo-ops/learning-project/actions/workflows/tests.yml/badge.svg)](https://github.com/fillo-ops/learning-project/actions/workflows/tests.yml)
 
-## 🚀 Key Accuracy Architecture
-* **Time-Decayed Dixon-Coles Model (`src/dixon_coles.py`)**: Estimates dynamic team attack and defense parameters with exponential time decay ($\xi$) and low-score correlation adjustments ($\rho$) for `0-0`, `1-0`, `0-1`, and `1-1` scorelines.
-* **Market Implied Probability Engine (`src/market.py`)**: Strips bookmaker overround (vig) to extract true market baseline probabilities and identify positive Expected Value (+EV) edges.
-* **Leak-Free Rolling & Elo Features (`src/features.py`)**: Tracks dynamic Elo ratings, exponentially weighted rolling form, goal differentials, and rest days using strict chronological shifting.
-* **Calibrated Ensemble Trainer (`src/trainer.py`)**: Blends statistical Poisson/Dixon-Coles probabilities with Gradient Boosting via walk-forward time-series validation and isotonic/sigmoid probability calibration.
+A machine learning and statistical modelling pipeline that predicts football match outcomes (Home Win, Draw, Away Win), exact scoreline distributions, and value edges against bookmaker odds.
+
+## 🚀 Model Architecture
+* **Time-Decayed Dixon-Coles (`src/dixon_coles.py`)**: Team attack/defence strengths with exponential time decay and the low-score correlation adjustment (ρ) for `0-0`, `1-0`, `0-1` and `1-1`. Fitted with an analytic gradient (~30 ms per fit), and refit **walk-forward** every 28 days on past matches only, so its probabilities can be used as features without leaking results.
+* **Market Implied Probabilities (`src/market.py`)**: Strips bookmaker overround with the power method (corrects favourite-longshot bias) and computes EV and fractional Kelly stakes.
+* **Leak-Free Elo & Rolling Form (`src/features.py`)**: Chronologically replayed Elo ratings (World Football Elo margin multiplier), exponentially weighted rolling form, shots on target and rest days. State is updated only *after* each match's features are recorded.
+* **Calibrated Ensemble (`src/model.py`)**: Sigmoid-calibrated gradient boosting blended with Dixon-Coles. The blend weight is learned from out-of-fold walk-forward predictions rather than hard-coded.
+
+## 📊 Evaluation
+`python -m scripts.train` writes `reports/cv_evaluation.json`, comparing every model **on the same out-of-sample matches**: the ensemble, gradient boosting alone, Dixon-Coles alone, a base-rate baseline and the de-vigged bookmaker market. Metrics: log loss, Ranked Probability Score (RPS), Brier score, accuracy and expected calibration error.
+
+On the bundled synthetic data the ensemble beats Dixon-Coles and the base rate, but not the bookmaker. That is expected, because the synthetic odds are generated from the true scoring rates. Run it on real Football-Data.co.uk CSVs for meaningful numbers.
+
+## 🏁 Quick Start
+```bash
+pip install -r requirements.txt
+
+python -m scripts.train                       # trains on data/matches.csv (synthetic data generated if missing)
+python -m scripts.train --csv E0.csv          # or a Football-Data.co.uk season CSV
+python -m scripts.predict --home Arsenal --away Chelsea --odds 2.05 3.50 3.60 --date 2026-05-02
+python -m scripts.ablation                    # walk-forward feature ablation study
+uvicorn api.main:app --reload                 # REST API: /predict, /teams, /health
+streamlit run app/dashboard.py                # interactive dashboard
+pytest                                        # test suite
+```
 
 ## 📂 Project Structure
 ```text
-football-predictor/
-├── api/
-│   └── main.py              # FastAPI prediction service
-├── app/
-│   └── dashboard.py         # Interactive Streamlit analytics dashboard
+├── api/main.py              # FastAPI prediction service (model cached in memory)
+├── app/dashboard.py         # Streamlit analytics dashboard
 ├── scripts/
 │   ├── make_synthetic.py    # Synthetic dataset generator
-│   ├── train.py             # End-to-end model training pipeline
-│   ├── train_from_csv.py    # Train directly from historical CSVs
-│   ├── ablation.py          # Feature ablation & importance study
-│   ├── predict.py           # Upcoming fixture probability CLI
-│   ├── auto_learn.py        # Automated retraining loop
-│   └── update.py            # Automated match result updater
+│   ├── train.py             # End-to-end training & evaluation
+│   ├── predict.py           # Fixture prediction CLI (optionally logs to SQLite)
+│   └── ablation.py          # Feature ablation study
 ├── src/
-│   ├── config.py            # Paths and hyperparameter configuration
-│   ├── db.py                # SQLite database layer
-│   ├── data_loader.py       # Data fetching and cleaning
-│   ├── csv_loader.py        # Football-Data.co.uk CSV ingestion
-│   ├── names.py             # Team name canonical normalization
-│   ├── dixon_coles.py       # Time-decayed Dixon-Coles goal model
-│   ├── market.py            # Bookmaker odds de-vigging & EV calculator
-│   ├── features.py          # Elo, rolling form, and rest-day engineering
-│   ├── model.py             # Core predictor wrapper
-│   ├── trainer.py           # Walk-forward ensemble & calibration trainer
-│   ├── evaluate.py          # Log-loss, Brier score, and calibration metrics
-│   ├── tracker.py           # Prediction vs. closing odds performance tracker
-│   └── service.py           # Shared prediction business logic
-└── tests/                   # Pytest unit and integration test suite
+│   ├── config.py            # Paths and hyperparameters
+│   ├── names.py             # Team name canonical normalisation
+│   ├── data_loader.py       # CSV loading, validation and cleaning
+│   ├── synthetic.py         # Round-robin synthetic league generator
+│   ├── db.py                # SQLite persistence (matches, predictions)
+│   ├── market.py            # Odds de-vigging, EV & Kelly
+│   ├── dixon_coles.py       # Time-decayed Dixon-Coles + walk-forward probabilities
+│   ├── features.py          # Elo, rolling form, rest-day and market features
+│   ├── evaluate.py          # Log loss, Brier, RPS, ECE
+│   ├── model.py             # MatchPredictorEngine (ensemble, prediction, persistence)
+│   └── pipeline.py          # Training pipeline & ablation study
+└── tests/                   # Pytest suite (incl. look-ahead leakage tests)
+```
+
+> ⚠️ Model artifacts are pickles: only load models you trained yourself. Predictions are for learning purposes, not betting advice.
