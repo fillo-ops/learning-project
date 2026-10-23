@@ -110,6 +110,22 @@ streamlit run app/dashboard.py                # interactive dashboard
 pytest                                        # test suite
 ```
 
+## 📄 Single-File Version
+`football_predictor_complete.py` bundles the whole system (every `src/` module, the CLI scripts as subcommands, the API and the dashboard) into one file you can copy anywhere next to an empty folder:
+
+```bash
+python football_predictor_complete.py                                   # first run trains, then a demo
+python football_predictor_complete.py predict --home Arsenal --away Chelsea --odds 2.05 3.50 3.60
+python football_predictor_complete.py simulate --home "Real Madrid" --away Arsenal
+python football_predictor_complete.py simulate --league --competition "Champions League"
+python football_predictor_complete.py markets price --home Arsenal --away Chelsea
+python football_predictor_complete.py train | ablation | synthetic | update
+python football_predictor_complete.py api          # http://localhost:8000/docs
+python football_predictor_complete.py dashboard    # http://localhost:8501
+```
+
+It is generated, not hand-edited: change the package, then run `python tools/build_single_file.py`. The test suite fails if the bundle is out of date.
+
 ## 📂 Project Structure
 ```text
 ├── api/main.py              # FastAPI service (typed responses, cached simulations)
@@ -144,7 +160,9 @@ pytest                                        # test suite
 │   ├── validation.py        # Data schema and sanity checks
 │   ├── analytics.py         # TeamAnalytics facade over the above
 │   └── pipeline.py          # Training pipeline & ablation study
-└── tests/                   # Pytest suite (incl. look-ahead leakage tests)
+├── tests/                   # Pytest suite (incl. look-ahead leakage tests)
+├── tools/build_single_file.py   # Builds the single-file version
+└── football_predictor_complete.py   # Generated single-file version
 ```
 
 > ⚠️ Model artifacts are pickles: only load models you trained yourself. Predictions are for learning purposes, not betting advice.
