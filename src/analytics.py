@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.context import latest_change_before
+from src.game_state import DisciplineModel
 from src.names import normalize_team_name
 from src.players import PlayerRatings
 from src.simulation import MatchSimulator
@@ -17,10 +19,22 @@ from src.team_ratings import TeamUnitRatings, season_timeline
 class TeamAnalytics:
     """Rates each team's attack, midfield and defence, profiles tactics, and simulates matchups."""
 
-    def __init__(self, matches: pd.DataFrame, players: pd.DataFrame | None = None, **simulator_kwargs: Any):
+    def __init__(
+        self,
+        matches: pd.DataFrame,
+        players: pd.DataFrame | None = None,
+        manager_changes: dict[str, list[pd.Timestamp]] | None = None,
+        **simulator_kwargs: Any,
+    ):
         self.matches = matches
-        self.ratings = TeamUnitRatings().fit(matches)
-        self.profiles = tactical_profiles(matches)
+        latest = pd.to_datetime(matches["Date"]).max()
+        current = latest_change_before(manager_changes or {}, latest)
+        self.manager_changes = current
+        self.ratings = TeamUnitRatings().fit(matches, manager_changes=current)
+        self.discipline = DisciplineModel().fit(matches)
+        # A new manager's style replaces the old one: profile only the matches since the appointment
+        self.profiles = tactical_profiles(matches, since=current)
+        simulator_kwargs.setdefault("discipline", self.discipline)
         self.players = PlayerRatings(players) if players is not None else None
         self.simulator = MatchSimulator(self.ratings, self.players, **simulator_kwargs)
 

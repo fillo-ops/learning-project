@@ -47,6 +47,20 @@ AGGRESSION: dict[str, float] = {
     "Brentford": 0.08, "Manchester City": -0.15, "Brighton": -0.10, "Arsenal": -0.05,
 }  # fmt: skip
 POSITIONS = {"GK": 2, "DEF": 7, "MID": 7, "FWD": 4}
+# Shot-placement skill (multiplies post-shot xG per unit of xG) and keeper quality
+# (multiplies goals conceded per unit of post-shot xG faced; below 1 = good keeper).
+FINISHING: dict[str, float] = {
+    "Liverpool": 1.15, "Manchester City": 1.08, "Tottenham": 1.06, "Nottingham Forest": 1.10,
+    "Brighton": 0.86, "Bournemouth": 0.90, "Everton": 0.92,
+}  # fmt: skip
+KEEPER: dict[str, float] = {
+    "Brentford": 0.82, "Arsenal": 0.88, "Crystal Palace": 0.90, "Newcastle United": 0.92,
+    "Southampton": 1.18, "Ipswich Town": 1.12, "Chelsea": 1.10,
+}  # fmt: skip
+REFEREES: dict[str, float] = {
+    "A Taylor": 1.0, "M Oliver": 0.8, "S Attwell": 1.0, "P Tierney": 1.3, "C Kavanagh": 1.1,
+    "R Jones": 0.9, "J Gillett": 1.0, "D Coote": 1.6,
+}  # fmt: skip
 
 
 def round_robin_schedule(n_teams: int, rng: np.random.Generator) -> list[list[tuple[int, int]]]:
@@ -81,6 +95,9 @@ def generate_synthetic_matches(
     defence = np.array([t[2] for t in TEAMS], dtype=float)
     midfield = np.array([MIDFIELD.get(n, 0.0) for n in names])
     aggression = np.array([AGGRESSION.get(n, 0.0) for n in names])
+    finishing = np.array([FINISHING.get(n, 1.0) for n in names])
+    keeper = np.array([KEEPER.get(n, 1.0) for n in names])
+    referees = list(REFEREES)
 
     rows: list[dict[str, Any]] = []
     start_date = pd.Timestamp("2023-08-12")
@@ -96,16 +113,33 @@ def generate_synthetic_matches(
                 lam = float(np.exp(attack[hi] + defence[ai] + home_adv + 0.5 * mid_edge))
                 mu = float(np.exp(attack[ai] + defence[hi] - 0.5 * mid_edge))
 
-                fthg = int(rng.poisson(lam))
-                ftag = int(rng.poisson(mu))
+                # Goals = open play (npxG -> post-shot xG via finishing -> goals via the opposing keeper)
+                # plus penalties; lam / mu stay the total expected goals used for the odds.
+                side_stats = {}
+                for key, rate, att_i, def_i in (("H", lam, hi, ai), ("A", mu, ai, hi)):
+                    pen_rate = 0.11 * np.exp(0.4 * (attack[att_i] + defence[def_i]))
+                    np_rate = max(rate - 0.78 * pen_rate, 0.05)
+                    npxg = np_rate / (finishing[att_i] * keeper[def_i]) * rng.gamma(10.0, 0.1)
+                    psxg = npxg * finishing[att_i] * np.exp(rng.normal(-0.005, 0.1))
+                    np_goals = int(rng.poisson(psxg * keeper[def_i]))
+                    pk_att = int(rng.poisson(pen_rate))
+                    pk = int(rng.binomial(pk_att, 0.78))
+                    side_stats[key] = (np_goals + pk, round(npxg, 2), round(psxg, 2), pk_att, pk)
+                fthg, ftag = side_stats["H"][0], side_stats["A"][0]
                 ftr = "H" if fthg > ftag else ("D" if fthg == ftag else "A")
+                referee = referees[int(rng.integers(len(referees)))]
+                ref_factor = REFEREES[referee]
 
                 # Bookmaker prices from the true rates plus noise, with a fixed overround
                 mat = np.outer(poisson.pmf(goals, lam), poisson.pmf(goals, mu))
                 true_p = np.array([np.tril(mat, -1).sum(), np.trace(mat), np.triu(mat, 1).sum()])
-                book_p = true_p * np.exp(rng.normal(0.0, 0.04, 3))
+                # Opening prices are noisier than closing prices (the market learns before kick-off)
+                book_p = true_p * np.exp(rng.normal(0.0, 0.06, 3))
                 book_p = book_p / book_p.sum() * margin
                 b365h, b365d, b365a = (round(float(1.0 / p), 2) for p in book_p)
+                close_p = true_p * np.exp(rng.normal(0.0, 0.02, 3))
+                close_p = close_p / close_p.sum() * 1.025
+                psch, pscd, psca = (round(float(1.0 / p), 2) for p in close_p)
 
                 # Midfield sets possession and chances created; an in-match possession swing
                 # (poss_shock) moves chances too, so possession -> chances is a real, learnable effect.
@@ -142,9 +176,25 @@ def generate_synthetic_matches(
                         "AC": int(rng.poisson(0.42 * max(shots_a, 1))),
                         "HF": int(rng.poisson(np.exp(np.log(10.5) + aggression[hi]))),
                         "AF": int(rng.poisson(np.exp(np.log(11.0) + aggression[ai]))),
+                        "HY": int(rng.poisson(1.7 * np.exp(aggression[hi]) * ref_factor**0.5)),
+                        "AY": int(rng.poisson(1.9 * np.exp(aggression[ai]) * ref_factor**0.5)),
+                        "HR": int(rng.poisson(0.05 * np.exp(3 * aggression[hi]) * ref_factor)),
+                        "AR": int(rng.poisson(0.05 * np.exp(3 * aggression[ai]) * ref_factor)),
+                        "Referee": referee,
+                        "HnpxG": side_stats["H"][1],
+                        "AnpxG": side_stats["A"][1],
+                        "HPSxG": side_stats["H"][2],
+                        "APSxG": side_stats["A"][2],
+                        "HPKatt": side_stats["H"][3],
+                        "APKatt": side_stats["A"][3],
+                        "HPK": side_stats["H"][4],
+                        "APK": side_stats["A"][4],
                         "B365H": b365h,
                         "B365D": b365d,
                         "B365A": b365a,
+                        "PSCH": psch,
+                        "PSCD": pscd,
+                        "PSCA": psca,
                     }
                 )
             # Weekly random-walk drift in team strength (gives time-decay something to track)

@@ -98,6 +98,8 @@ with units_tab:
     away_out = s2.multiselect(
         "Away absentees", sorted(squad.loc[squad["team"] == sim_away, "player"]) if squad is not None else []
     )
+    referees = sorted(analytics.matches["Referee"].dropna().unique()) if "Referee" in analytics.matches.columns else []
+    referee = st.selectbox("Referee (red-card risk)", ["(unknown)", *referees]) if referees else "(unknown)"
 
     if st.button("Run simulation", type="primary"):
         if sim_home == sim_away:
@@ -110,6 +112,7 @@ with units_tab:
             possession_shift=float(poss_shift),
             home_absent=home_out,
             away_absent=away_out,
+            referee=None if referee == "(unknown)" else referee,
         )
         if res["expected_possession"]:
             st.caption(
@@ -139,6 +142,21 @@ with units_tab:
             st.dataframe(pd.DataFrame(sd["goal_breakdown"]).T)
             if "players" in sd:
                 st.dataframe(pd.DataFrame(sd["players"]["top_scorers"]))
+        gs = res.get("game_state")
+        if gs:
+            st.markdown("**How the match unfolds** (six 15-minute game states)")
+            g1, g2, g3, g4 = st.columns(4)
+            g1.metric(f"{sim_home} scores first", f"{gs['home_scores_first']:.0%}")
+            g2.metric(f"{sim_away} scores first", f"{gs['away_scores_first']:.0%}")
+            g3.metric(f"{sim_home} red card", f"{gs['p_home_red_card']:.1%}")
+            g4.metric(f"{sim_away} red card", f"{gs['p_away_red_card']:.1%}")
+            st.caption("Expected goals per 15-minute period")
+            st.bar_chart(pd.DataFrame(gs["goals_by_period"]))
+        mk = res["markets"]
+        st.markdown(f"**Asian lines** (fair odds) | Over 2.5: {mk['over_2_5']:.1%} | BTTS: {mk['btts']:.1%}")
+        m1, m2 = st.columns(2)
+        m1.dataframe(pd.DataFrame(mk["asian_handicap_home"]).set_index("line")[["win", "push", "loss", "fair_odds"]])
+        m2.dataframe(pd.DataFrame(mk["goal_lines_over"]).set_index("line")[["fair_odds", "under_fair_odds"]])
         for note in res["tactical_notes"]:
             st.info(note)
         st.markdown("**Midfield sensitivity**")

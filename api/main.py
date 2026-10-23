@@ -1,18 +1,28 @@
-"""FastAPI prediction service: uvicorn api.main:app --reload"""
+"""FastAPI prediction service: uvicorn api.main:app --reload  (interactive docs at /docs)"""
 
 from __future__ import annotations
 
+import copy
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query
 
+from api.schemas import (
+    AsianLines,
+    PortfolioRequest,
+    PortfolioResponse,
+    PredictionResponse,
+    SimulationResponse,
+    UnitRatingResponse,
+)
 from src.analytics import TeamAnalytics
 from src.config import DEFAULT_MODEL_PATH
+from src.market import asian_markets, line_movement, portfolio_kelly
 from src.model import MatchPredictorEngine
 from src.pipeline import load_analytics, load_or_train
 
-app = FastAPI(title="Football Match Predictor API", version="2.2.0")
+app = FastAPI(title="Football Match Predictor API", version="2.3.0")
 
 
 @lru_cache(maxsize=1)
@@ -37,7 +47,7 @@ def teams() -> dict:
     return {"teams": get_engine().teams}
 
 
-@app.get("/predict")
+@app.get("/predict", response_model=PredictionResponse)
 def predict(
     home: str = Query(..., description="Home team name"),
     away: str = Query(..., description="Away team name"),
@@ -56,7 +66,7 @@ def predict(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.get("/units")
+@app.get("/units", response_model=UnitRatingResponse)
 def league_units() -> dict:
     """Attack / midfield / defence indices (100 = league average) for every team."""
     table = get_analytics().ratings.league_table()
@@ -81,7 +91,33 @@ def attack_vs_defences(team: str, at_home: bool = True) -> dict:
     return {"team": team, "at_home": at_home, "opponents": table.to_dict(orient="records")}
 
 
-@app.get("/simulate")
+@lru_cache(maxsize=256)
+def _cached_simulation(
+    analytics_id: int,
+    home: str,
+    away: str,
+    midfield_shift: float,
+    possession_shift: float,
+    home_absent: tuple[str, ...],
+    away_absent: tuple[str, ...],
+    referee: str | None,
+) -> dict[str, Any]:
+    """20,000-run simulations are deterministic (seeded), so identical what-ifs are served from memory."""
+    analytics = get_analytics()
+    result = analytics.simulate(
+        home,
+        away,
+        midfield_shift=midfield_shift,
+        possession_shift=possession_shift,
+        home_absent=list(home_absent) or None,
+        away_absent=list(away_absent) or None,
+        referee=referee,
+    )
+    result["midfield_sensitivity"] = analytics.simulator.midfield_sensitivity(home, away).to_dict(orient="records")
+    return result
+
+
+@app.get("/simulate", response_model=SimulationResponse)
 def simulate(
     home: str = Query(..., description="Home team name"),
     away: str = Query(..., description="Away team name"),
@@ -89,19 +125,48 @@ def simulate(
     possession_shift: float = Query(0.0, ge=-40.0, le=40.0, description="Extra possession points for the home side"),
     home_absent: Annotated[list[str] | None, Query(description="Unavailable home players")] = None,
     away_absent: Annotated[list[str] | None, Query(description="Unavailable away players")] = None,
+    referee: str | None = Query(None, description="Referee (scales red-card risk)"),
 ) -> dict:
-    """Monte Carlo simulation of a fixture: goals each attack can score, how each defence fares, midfield impact."""
+    """Monte Carlo game-state simulation: goals each attack can score, how each defence fares, midfield impact."""
     analytics = get_analytics()
     try:
-        result = analytics.simulate(
+        result = _cached_simulation(
+            id(analytics),
             home,
             away,
-            midfield_shift=midfield_shift,
-            possession_shift=possession_shift,
-            home_absent=home_absent,
-            away_absent=away_absent,
+            midfield_shift,
+            possession_shift,
+            tuple(sorted(home_absent or [])),
+            tuple(sorted(away_absent or [])),
+            referee,
         )
-        result["midfield_sensitivity"] = analytics.simulator.midfield_sensitivity(home, away).to_dict(orient="records")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return result
+    return copy.deepcopy(result)
+
+
+@app.get("/markets/asian", response_model=AsianLines)
+def asian_lines(home: str = Query(...), away: str = Query(...)) -> dict:
+    """Fair Asian handicap and goal-line odds from the simulated joint score distribution."""
+    try:
+        matrix = get_analytics().simulator.score_matrix(home, away)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return asian_markets(matrix)
+
+
+@app.get("/markets/line-movement")
+def market_line_movement() -> dict:
+    """Opening-to-closing price moves per team and whether moves carried information."""
+    try:
+        table, summary = line_movement(get_analytics().matches)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"summary": summary, "teams": table.reset_index().to_dict(orient="records")}
+
+
+@app.post("/portfolio", response_model=PortfolioResponse)
+def portfolio(request: PortfolioRequest) -> dict:
+    """Matchday staking: one bet per match, fractional Kelly, total exposure capped."""
+    picks = portfolio_kelly([b.model_dump() for b in request.bets], max_total_exposure=request.max_total_exposure)
+    return {"bets": picks, "total_exposure": round(sum(p["stake"] for p in picks), 4)}

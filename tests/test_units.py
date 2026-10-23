@@ -51,7 +51,7 @@ def test_goal_decomposition_telescopes(analytics):
 def test_simulation_matches_expected_rates(analytics):
     res = analytics.simulate("Arsenal", "Everton")
     for side in ("home", "away"):
-        xg = res[side]["expected_rates"]["xg"]
+        xg = res[side]["expected_rates"]["expected_goals"]
         assert res[side]["attack"]["mean_goals"] == pytest.approx(xg, rel=0.05)
         assert sum(res[side]["attack"]["goal_distribution"].values()) == pytest.approx(1.0, abs=1e-3)
     assert sum(res["outcome"].values()) == pytest.approx(1.0, abs=1e-3)
@@ -149,13 +149,20 @@ def test_possession_elasticity_is_recovered(analytics):
     assert 1.1 < analytics.ratings.possession_elasticity_ < 2.1
 
 
-def test_attack_blends_goals_and_shots_on_target(analytics):
-    r = analytics.ratings
-    profile = r.unit_profile("Liverpool")
-    g, t = r.layers_["goals"].gen["Liverpool"], r.layers_["sot"].gen["Liverpool"]
+def test_attack_blends_goals_and_shots_on_target(season_df):
+    plain = TeamUnitRatings().fit(season_df.drop(columns=["HnpxG", "AnpxG", "HPSxG", "APSxG"]))
+    profile = plain.unit_profile("Liverpool")
+    g, t = plain.layers_["goals"].gen["Liverpool"], plain.layers_["sot"].gen["Liverpool"]
     assert profile["attack"] == pytest.approx(100 * np.exp(0.5 * g + 0.5 * t), abs=0.1)
     assert profile["goal_threat"] == pytest.approx(100 * np.exp(g), abs=0.1)
     assert profile["shots_on_target"] == pytest.approx(100 * np.exp(t), abs=0.1)
+
+
+def test_attack_uses_npxg_when_available(analytics):
+    r = analytics.ratings
+    e = {k: r.layers_[k].gen["Liverpool"] for k in ("npxg", "sot", "goals")}
+    expected = 100 * np.exp(0.5 * e["npxg"] + 0.25 * e["sot"] + 0.25 * e["goals"])
+    assert r.unit_profile("Liverpool")["attack"] == pytest.approx(expected, abs=0.1)
 
 
 def test_possession_shift_drives_chances_and_goals(analytics):

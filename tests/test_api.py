@@ -58,3 +58,34 @@ def test_simulate_possession_shift(analytics_client):
     resp = analytics_client.get("/simulate", params={"home": "Arsenal", "away": "Chelsea", "possession_shift": 8})
     assert resp.status_code == 200
     assert resp.json()["possession_shift"] == 8
+
+
+def test_simulation_is_cached(analytics_client):
+    api_main._cached_simulation.cache_clear()
+    params = {"home": "Liverpool", "away": "Fulham"}
+    first = analytics_client.get("/simulate", params=params).json()
+    second = analytics_client.get("/simulate", params=params).json()
+    assert first == second
+    assert api_main._cached_simulation.cache_info().hits >= 1
+    assert first["game_state"]["p_goalless"] >= 0
+
+
+def test_market_endpoints(analytics_client):
+    lines = analytics_client.get("/markets/asian", params={"home": "Arsenal", "away": "Chelsea"}).json()
+    assert lines["asian_handicap_home"] and lines["goal_lines_over"]
+    lm = analytics_client.get("/markets/line-movement").json()
+    assert "log_loss_closing" in lm["summary"]
+    body = {
+        "bets": [
+            {"match": "A-B", "selection": "H", "prob": 0.6, "odds": 2.0},
+            {"match": "C-D", "selection": "A", "prob": 0.5, "odds": 2.5},
+        ],
+        "max_total_exposure": 0.05,
+    }
+    resp = analytics_client.post("/portfolio", json=body).json()
+    assert resp["total_exposure"] <= 0.05 + 1e-9
+
+
+def test_openapi_has_typed_schemas(client):
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    assert {"PredictionResponse", "SimulationResponse", "AsianLines", "PortfolioResponse"} <= set(schemas)

@@ -9,7 +9,8 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import poisson
 
-from src.config import MODEL_CONFIG
+from src.config import MODEL_CONFIG, UNIT_CONFIG
+from src.context import latest_change_before
 from src.names import normalize_team_name
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,12 @@ class TimeDecayedDixonColes:
         self.home_adv_: float = 0.24
         self.rho_: float = -0.06
 
-    def fit(self, df: pd.DataFrame, as_of: pd.Timestamp | None = None) -> TimeDecayedDixonColes:
+    def fit(
+        self,
+        df: pd.DataFrame,
+        as_of: pd.Timestamp | None = None,
+        manager_changes: dict[str, pd.Timestamp] | None = None,
+    ) -> TimeDecayedDixonColes:
         """Fits team strengths, weighting each match by exp(-xi * days before `as_of`).
 
         `as_of` defaults to the most recent match date in `df`.
@@ -136,6 +142,10 @@ class TimeDecayedDixonColes:
         ref_date = pd.Timestamp(as_of) if as_of is not None else data["Date"].max()
         days_ago = (ref_date - data["Date"]).dt.days.clip(lower=0).to_numpy(dtype=float)
         weights = np.exp(-np.log(2.0) / self.halflife_days * days_ago)
+        # Matches before a team's latest manager appointment say less about the team now
+        for team, changed in (manager_changes or {}).items():
+            before = ((data["HomeTeam"] == team) | (data["AwayTeam"] == team)) & (data["Date"] < pd.Timestamp(changed))
+            weights = np.where(before.to_numpy(), weights * UNIT_CONFIG["manager_change_discount"], weights)
 
         teams = sorted(set(data["HomeTeam"]).union(data["AwayTeam"]))
         n = len(teams)
@@ -194,6 +204,7 @@ def walk_forward_dc_probs(
     df: pd.DataFrame,
     refit_days: int = MODEL_CONFIG["dixon_coles_refit_days"],
     min_matches: int = MODEL_CONFIG["dixon_coles_min_matches"],
+    manager_changes: dict[str, list[pd.Timestamp]] | None = None,
     **model_kwargs: float,
 ) -> np.ndarray:
     """Out-of-sample Dixon-Coles 1X2 probabilities for every row of `df`.
@@ -215,7 +226,10 @@ def walk_forward_dc_probs(
         if next_refit is None or dt >= next_refit:
             history = data.iloc[order[: np.searchsorted(dates, dt, side="left")]]
             if len(history) >= min_matches:
-                model = TimeDecayedDixonColes(**model_kwargs).fit(history, as_of=pd.Timestamp(dt))
+                changes = latest_change_before(manager_changes or {}, pd.Timestamp(dt))
+                model = TimeDecayedDixonColes(**model_kwargs).fit(
+                    history, as_of=pd.Timestamp(dt), manager_changes=changes
+                )
                 next_refit = dt + np.timedelta64(refit_days, "D")
         if model is not None:
             p = model.predict_1x2(data.iloc[row_i]["HomeTeam"], data.iloc[row_i]["AwayTeam"])

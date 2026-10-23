@@ -65,6 +65,35 @@ def _print_simulation(res: dict) -> None:
                 print(f"Absence effects: {p['absence_effects']}")
             print(pd.DataFrame(p["top_scorers"]).to_string(index=False))
 
+    gs = res.get("game_state")
+    if gs:
+        print("\n-- How the match unfolds (15-minute game-state simulation) --")
+        print(
+            f"Scores first: {h} {gs['home_scores_first']:.0%}, {a} {gs['away_scores_first']:.0%}, goalless {gs['p_goalless']:.0%}"
+        )
+        print(
+            f"Win after scoring first: {h} {gs['home_win_if_scores_first'] or 0:.0%}, "
+            f"{a} {gs['away_win_if_scores_first'] or 0:.0%}; "
+            f"comeback wins: {h} {gs['home_comeback_win']:.1%}, {a} {gs['away_comeback_win']:.1%}"
+        )
+        print(
+            f"Share of match: {h} leading {gs['share_of_match_home_leading']:.0%}, level "
+            f"{gs['share_of_match_level']:.0%}, {a} leading {gs['share_of_match_away_leading']:.0%}"
+        )
+        ref = f" (referee {gs['referee']})" if gs.get("referee") else ""
+        print(f"Red card: {h} {gs['p_home_red_card']:.1%}, {a} {gs['p_away_red_card']:.1%}{ref}")
+        print(pd.DataFrame(gs["goals_by_period"]).T.to_string())
+
+    mk = res.get("markets")
+    if mk:
+        print(f"\n-- Markets -- Over 2.5: {mk['over_2_5']:.1%}  BTTS: {mk['btts']:.1%}")
+        ah = pd.DataFrame(mk["asian_handicap_home"]).set_index("line")
+        print(f"Asian handicap ({h}) fair odds:")
+        print(ah[["win", "half_win", "push", "half_loss", "loss", "fair_odds"]].to_string())
+        gl = pd.DataFrame(mk["goal_lines_over"]).set_index("line")
+        print("Goal lines (over / under fair odds):")
+        print(gl[["fair_odds", "under_fair_odds"]].to_string())
+
     if res["tactical_notes"]:
         print("\n-- Tactical notes --")
         for note in res["tactical_notes"]:
@@ -88,10 +117,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--team", help="Print the season unit report for this team instead")
     parser.add_argument("--league", action="store_true", help="Print unit ratings for every team")
     parser.add_argument("--json", action="store_true", help="Print raw JSON")
+    parser.add_argument("--referee", help="Referee name (scales red-card risk if the data has a Referee column)")
+    parser.add_argument("--static", action="store_true", help="Single full-match draw instead of 15-minute game states")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
-    analytics = load_analytics(players_path=Path(args.players), n_sims=args.sims)
+    analytics = load_analytics(players_path=Path(args.players), n_sims=args.sims, game_state=not args.static)
 
     try:
         if args.league:
@@ -120,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
 
         res = analytics.simulate(
             args.home, args.away, midfield_shift=args.midfield_shift, possession_shift=args.possession_shift,
-            home_absent=args.home_absent, away_absent=args.away_absent,
+            home_absent=args.home_absent, away_absent=args.away_absent, referee=args.referee,
         )  # fmt: skip
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

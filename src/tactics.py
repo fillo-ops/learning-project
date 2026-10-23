@@ -40,9 +40,20 @@ def team_match_log(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True).sort_values(["Date", "team"], kind="stable").reset_index(drop=True)
 
 
-def style_metrics(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
-    """Per-team style metrics over each team's most recent `last_n` matches (None = all)."""
+def style_metrics(
+    df: pd.DataFrame, last_n: int | None = 19, since: dict[str, pd.Timestamp] | None = None
+) -> pd.DataFrame:
+    """Per-team style metrics over each team's most recent `last_n` matches (None = all).
+
+    `since` maps team -> manager appointment date; when a team has at least
+    MIN_MATCHES_NEW_MANAGER matches since then, only those are used.
+    """
     log = team_match_log(df)
+    for team, start in (since or {}).items():
+        mine = log["team"] == team
+        recent = mine & (log["Date"] >= pd.Timestamp(start))
+        if recent.sum() >= MIN_MATCHES_NEW_MANAGER:
+            log = log[~mine | recent]
     if last_n:
         log = log.groupby("team", group_keys=False).tail(last_n)
     g = log.groupby("team")
@@ -76,6 +87,7 @@ def style_metrics(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
 
 
 MAX_TRAITS = 4
+MIN_MATCHES_NEW_MANAGER = 4
 
 _TRAITS = [
     # (metric, direction, z threshold, label)
@@ -98,9 +110,11 @@ _TRAITS = [
 ]
 
 
-def tactical_profiles(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
+def tactical_profiles(
+    df: pd.DataFrame, last_n: int | None = 19, since: dict[str, pd.Timestamp] | None = None
+) -> pd.DataFrame:
     """Style metrics plus league z-scores and descriptive tactical labels for every team."""
-    metrics = style_metrics(df, last_n=last_n)
+    metrics = style_metrics(df, last_n=last_n, since=since)
     z = (metrics - metrics.mean()) / metrics.std(ddof=0).replace(0, np.nan)
     labels = []
     for team in metrics.index:

@@ -1,0 +1,42 @@
+name: weekly data check
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC, after the weekend's results are published
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Football-Data season code (e.g. 2526)"
+        default: "2526"
+      league:
+        description: "League code (E0 = Premier League)"
+        default: "E0"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Download and validate the latest season
+        id: check
+        run: python -m scripts.update --league "${{ inputs.league || 'E0' }}" --season "${{ inputs.season || '2526' }}" --check-only
+      - name: Open an issue when validation fails
+        if: failure() && steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Data validation failed ($(date -u +%Y-%m-%d))"
+          if gh issue list --state open --search "Data validation failed in:title" --json number --jq '.[0].number' | grep -q .; then
+            echo "An open data-validation issue already exists; not opening another."
+          else
+            gh issue create --title "$title" --body-file reports/data_validation.md
+          fi

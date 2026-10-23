@@ -11,6 +11,10 @@ using opponent-adjusted rates from TeamUnitRatings, optionally modified by playe
 absences (PlayerRatings) and "what if" shifts in possession or the midfield battle.
 Possession shifts are converted into chance volume using the possession elasticity
 estimated from the match data.
+
+By default matches are played in six 15-minute blocks (src/game_state.py) so scoreline
+effects and red cards change each side's chance volume and quality as the match unfolds;
+`game_state=False` reverts to a single full-match draw.
 """
 
 from __future__ import annotations
@@ -21,7 +25,9 @@ import numpy as np
 import pandas as pd
 from scipy.stats import poisson
 
-from src.config import SIMULATION_CONFIG
+from src.config import GAME_STATE_CONFIG, SIMULATION_CONFIG
+from src.game_state import BlockDraws, DisciplineModel, calibrated_scales, game_state_summary, simulate_blocks
+from src.market import asian_markets, score_matrix_from_samples
 from src.names import normalize_team_name
 from src.players import NEUTRAL_EFFECTS, PlayerRatings
 from src.team_ratings import TeamUnitRatings, _logit
@@ -39,12 +45,18 @@ class MatchSimulator:
         n_sims: int = SIMULATION_CONFIG["n_sims"],
         performance_sd: float = SIMULATION_CONFIG["performance_sd"],
         seed: int = 2024,
+        discipline: DisciplineModel | None = None,
+        game_state: bool = SIMULATION_CONFIG["game_state"],
+        game_state_config: dict | None = None,
     ):
         self.ratings = ratings
         self.players = players
         self.n_sims = int(n_sims)
         self.performance_sd = float(performance_sd)
         self.seed = seed
+        self.discipline = discipline or DisciplineModel()
+        self.game_state = bool(game_state)
+        self.game_state_config = {**GAME_STATE_CONFIG, **(game_state_config or {})}
 
     # ------------------------------------------------------------------ rates
     def _effects(self, team: str, absent: list[str] | None) -> dict[str, float]:
@@ -95,14 +107,30 @@ class MatchSimulator:
                 "p_on_target": p_on,
                 "p_convert": p_conv,
                 "expected_shots_on_target": float(volume * p_on),
-                "xg": float(volume * p_on * p_conv),
+                "xg": float(volume * p_on * p_conv),  # open play
             }
+            if r.get("pen_rate"):
+                out[side]["pen_rate"] = r["pen_rate"]
+                out[side]["pen_conv"] = r["pen_conv"]
+            out[side]["expected_goals"] = out[side]["xg"] + r.get("pen_rate", 0.0) * r.get("pen_conv", 0.0)
             if home_poss is not None:
                 out[side]["possession"] = home_poss if side == "home" else 1.0 - home_poss
         return out
 
     # ------------------------------------------------------------- simulation
-    def _draw(self, rates: dict[str, dict[str, float]], rng: np.random.Generator) -> dict[str, np.ndarray]:
+    def red_rates(self, home: str, away: str, referee: str | None = None) -> dict[str, float]:
+        return {"home": self.discipline.red_rate(home, referee), "away": self.discipline.red_rate(away, referee)}
+
+    def _draw(
+        self, rates: dict[str, dict[str, float]], seed: int, red_rates: dict[str, float] | None = None
+    ) -> dict[str, BlockDraws]:
+        rng = np.random.default_rng(seed)
+        if self.game_state:
+            red = red_rates or {"home": self.discipline.league_rate_, "away": self.discipline.league_rate_}
+            scales = calibrated_scales(
+                rates, red, self.performance_sd, seed, self.game_state_config, n_sims=self.n_sims
+            )
+            return simulate_blocks(rates, red, self.n_sims, self.performance_sd, rng, self.game_state_config, scales)
         sd = self.performance_sd
         draws = {}
         for side in ("home", "away"):
@@ -111,7 +139,9 @@ class MatchSimulator:
             volume = rng.poisson(r["volume"] * noise)
             sot = rng.binomial(volume, r["p_on_target"])
             goals = rng.binomial(sot, r["p_convert"])
-            draws[side] = np.stack([volume, sot, goals])
+            if r.get("pen_rate"):
+                goals = goals + rng.binomial(rng.poisson(r["pen_rate"], self.n_sims), r["pen_conv"])
+            draws[side] = BlockDraws(volume, sot, goals, goals[:, None], np.zeros(self.n_sims, dtype=int))
         return draws
 
     def simulate(
@@ -122,20 +152,23 @@ class MatchSimulator:
         home_absent: list[str] | None = None,
         away_absent: list[str] | None = None,
         possession_shift: float = 0.0,
+        referee: str | None = None,
     ) -> dict[str, Any]:
         """Runs `n_sims` matches and summarises attack, defence, midfield and scorer outcomes."""
         h, a = normalize_team_name(home), normalize_team_name(away)
         if h == a:
             raise ValueError("Home and away team must be different")
         rates = self.side_rates(h, a, midfield_shift, home_absent, away_absent, possession_shift)
-        draws = self._draw(rates, np.random.default_rng(self.seed))
-        hg, ag = draws["home"][2], draws["away"][2]
+        red = self.red_rates(h, a, referee)
+        draws = self._draw(rates, self.seed, red)
+        hg, ag = draws["home"].goals, draws["away"].goals
 
         teams = {"home": (h, a, True, home_absent), "away": (a, h, False, away_absent)}
         sides: dict[str, Any] = {}
         for side, (team, opp, at_home, absent) in teams.items():
-            volume, sot, goals = draws[side]
-            conceded = draws["away" if side == "home" else "home"][2]
+            d = draws[side]
+            volume, sot, goals = d.volume, d.sot, d.goals
+            conceded = draws["away" if side == "home" else "home"].goals
             sides[side] = {
                 "team": team,
                 "attack": self._goal_summary(goals, volume, sot, rates[side]["expected_shots"]),
@@ -180,6 +213,20 @@ class MatchSimulator:
                 {"score": f"{x}-{y}", "probability": round(float(p), 4)} for (x, y), p in scores.items()
             ],
             "unit_comparison": self.unit_comparison(h, a),
+            "markets": {
+                "over_2_5": round(float(np.mean(hg + ag > 2)), 4),
+                "btts": round(float(np.mean((hg > 0) & (ag > 0))), 4),
+                **asian_markets(score_matrix_from_samples(hg, ag)),
+            },
+            "game_state": (
+                {
+                    **game_state_summary(draws),
+                    "red_card_rates": {k: round(v, 4) for k, v in red.items()},
+                    "referee": referee,
+                }
+                if self.game_state
+                else None
+            ),
             "home": sides["home"],
             "away": sides["away"],
         }
@@ -257,6 +304,12 @@ class MatchSimulator:
         return rows
 
     # ----------------------------------------------------- matchup analytics
+    def score_matrix(self, home: str, away: str, referee: str | None = None, **what_if: Any) -> np.ndarray:
+        """Simulated joint (home goals, away goals) distribution, for pricing any market."""
+        h, a = normalize_team_name(home), normalize_team_name(away)
+        draws = self._draw(self.side_rates(h, a, **what_if), self.seed, self.red_rates(h, a, referee))
+        return score_matrix_from_samples(draws["home"].goals, draws["away"].goals)
+
     def unit_comparison(self, home: str, away: str) -> list[dict[str, Any]]:
         """Head-to-head unit battles (indices: 100 = league average)."""
         ph, pa = self.ratings.unit_profile(home), self.ratings.unit_profile(away)
@@ -300,8 +353,8 @@ class MatchSimulator:
         for shift in shifts:
             kwargs = {"possession_shift": shift} if by_possession else {"midfield_shift": shift}
             rates = self.side_rates(home, away, **kwargs)
-            draws = self._draw(rates, np.random.default_rng(self.seed))
-            hg, ag = draws["home"][2], draws["away"][2]
+            draws = self._draw(rates, self.seed)
+            hg, ag = draws["home"].goals, draws["away"].goals
             row: dict[str, Any] = {"possession_shift" if by_possession else "midfield_shift": shift}
             if by_possession:
                 row["home_possession_pct"] = round(100.0 * rates["home"]["possession"], 1)
@@ -327,7 +380,7 @@ class MatchSimulator:
             if opp == t:
                 continue
             home, away = (t, opp) if at_home else (opp, t)
-            xg = self.side_rates(home, away)["home" if at_home else "away"]["xg"]
+            xg = self.side_rates(home, away)["home" if at_home else "away"]["expected_goals"]
             rows.append(
                 {
                     "opponent": opp,
