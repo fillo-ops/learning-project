@@ -13,17 +13,20 @@ from sklearn.model_selection import TimeSeriesSplit
 from src.analytics import TeamAnalytics
 from src.config import (
     DEFAULT_CSV_PATH,
+    DEFAULT_FIXTURES_PATH,
+    DEFAULT_MANAGERS_PATH,
     DEFAULT_MODEL_PATH,
     DEFAULT_PLAYERS_PATH,
     MODEL_CONFIG,
     REPORTS_DIR,
     ensure_dirs,
 )
+from src.context import FixtureCalendar, load_manager_changes
 from src.data_loader import DataLoader
 from src.db import DatabaseManager
 from src.dixon_coles import walk_forward_dc_probs
 from src.evaluate import TARGET_MAP, evaluate_predictions
-from src.features import DC_COLS, ELO_COLS, FEATURE_COLS, FORM_COLS, FeatureBuilder
+from src.features import CONTEXT_COLS, DC_COLS, ELO_COLS, FEATURE_COLS, FORM_COLS, FeatureBuilder
 from src.model import MatchPredictorEngine, make_classifier
 from src.synthetic import generate_synthetic_matches, generate_synthetic_players
 
@@ -36,8 +39,17 @@ def load_or_create_dataset(csv_path: Path = DEFAULT_CSV_PATH) -> pd.DataFrame:
     if not csv_path.exists():
         logger.info("No CSV found at %s. Generating 3 synthetic seasons...", csv_path)
         csv_path.parent.mkdir(parents=True, exist_ok=True)
-        generate_synthetic_matches(n_seasons=3).to_csv(csv_path, index=False, date_format="%Y-%m-%d")
+        generate_synthetic_matches(n_seasons=3, include_champions_league=True).to_csv(
+            csv_path, index=False, date_format="%Y-%m-%d"
+        )
     return DataLoader().load_csv_safely(csv_path)
+
+
+def load_context() -> tuple[FixtureCalendar | None, dict]:
+    """Optional all-competition calendar and manager appointments, if their CSVs exist."""
+    calendar = FixtureCalendar.from_csv(DEFAULT_FIXTURES_PATH) if DEFAULT_FIXTURES_PATH.exists() else None
+    managers = load_manager_changes(DEFAULT_MANAGERS_PATH) if DEFAULT_MANAGERS_PATH.exists() else {}
+    return calendar, managers
 
 
 def run_full_pipeline(csv_path: Path = DEFAULT_CSV_PATH, model_path: Path = DEFAULT_MODEL_PATH) -> MatchPredictorEngine:
@@ -47,7 +59,8 @@ def run_full_pipeline(csv_path: Path = DEFAULT_CSV_PATH, model_path: Path = DEFA
     DatabaseManager().save_matches(df)
 
     engine = MatchPredictorEngine()
-    metrics = engine.fit(df)
+    calendar, managers = load_context()
+    metrics = engine.fit(df, calendar=calendar, manager_changes=managers)
     engine.save(model_path)
 
     report_path = REPORTS_DIR / "cv_evaluation.json"
@@ -76,7 +89,8 @@ def load_analytics(
     else:
         logger.warning("No player CSV at %s; using synthetic players for the demo", players_path)
         players = generate_synthetic_players(matches)
-    return TeamAnalytics(matches, players, **simulator_kwargs)
+    _, managers = load_context()
+    return TeamAnalytics(matches, players, manager_changes=managers, **simulator_kwargs)
 
 
 def run_ablation_study(df: pd.DataFrame, n_splits: int = MODEL_CONFIG["cv_splits"]) -> pd.DataFrame:
@@ -93,7 +107,8 @@ def run_ablation_study(df: pd.DataFrame, n_splits: int = MODEL_CONFIG["cv_splits
         "1. Rolling form + rest days": FORM_COLS,
         "2. + Elo ratings": ELO_COLS + FORM_COLS,
         "3. + Walk-forward Dixon-Coles": ELO_COLS + FORM_COLS + DC_COLS,
-        "4. + De-vigged market (full)": FEATURE_COLS,
+        "4. + Congestion & table stakes": ELO_COLS + FORM_COLS + DC_COLS + CONTEXT_COLS,
+        "5. + De-vigged market (full)": FEATURE_COLS,
     }
 
     splits = list(TimeSeriesSplit(n_splits=n_splits).split(feat_df))

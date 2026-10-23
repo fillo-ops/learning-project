@@ -65,14 +65,24 @@ with predict_tab:
 
 with units_tab:
     analytics = get_analytics()
-    st.caption("Indices: 100 = league average; higher is better for the team. Opponent-adjusted and time-weighted.")
-    st.dataframe(analytics.ratings.league_table())
+    comps = analytics.competitions
+    competition = st.selectbox("Competition", ["All clubs", *comps]) if comps else "All clubs"
+    comp_filter = None if competition == "All clubs" else competition
+    club_list = analytics.teams_in(comp_filter)
+    st.caption(
+        "Indices: 100 = average of all clubs in the data; higher is better. Opponent-adjusted and time-weighted. "
+        "Clubs from different leagues share one scale through their Champions League meetings."
+    )
+    st.dataframe(analytics.league_table(comp_filter))
 
-    team = st.selectbox("Season report for", analytics.teams, key="report_team")
+    team = st.selectbox("Season report for", club_list, key="report_team")
     report = analytics.team_report(team)
     st.markdown(f"**Style:** {report['style']}")
     tl = pd.DataFrame(report["timeline"]).set_index("date")
     st.line_chart(tl[["attack", "defence", "midfield"]])
+    if "possession" in tl:
+        st.caption("Expected possession % vs an average side")
+        st.line_chart(tl[["possession"]])
     if "players" in report:
         st.markdown("**Players** (ratings: 50 = average for the position)")
         st.dataframe(pd.DataFrame(report["players"]))
@@ -80,9 +90,14 @@ with units_tab:
     st.divider()
     st.subheader("Simulate a matchup")
     s1, s2 = st.columns(2)
-    sim_home = s1.selectbox("Home", analytics.teams, index=0, key="sim_home")
-    sim_away = s2.selectbox("Away", analytics.teams, index=1, key="sim_away")
-    shift = st.slider("Tilt the midfield battle (+ favours home)", -0.5, 0.5, 0.0, 0.05)
+    sim_home = s1.selectbox("Home", club_list, index=0, key="sim_home")
+    sim_away = s2.selectbox("Away", club_list, index=1, key="sim_away")
+    if analytics.ratings.has_possession:
+        poss_shift = st.slider("Extra possession for the home side (percentage points)", -20, 20, 0, 1)
+        shift = 0.0
+    else:
+        poss_shift = 0
+        shift = st.slider("Tilt the midfield battle (+ favours home)", -0.5, 0.5, 0.0, 0.05)
     squad = analytics.players.players if analytics.players is not None else None
     home_out = s1.multiselect(
         "Home absentees", sorted(squad.loc[squad["team"] == sim_home, "player"]) if squad is not None else []
@@ -90,12 +105,28 @@ with units_tab:
     away_out = s2.multiselect(
         "Away absentees", sorted(squad.loc[squad["team"] == sim_away, "player"]) if squad is not None else []
     )
+    referees = sorted(analytics.matches["Referee"].dropna().unique()) if "Referee" in analytics.matches.columns else []
+    referee = st.selectbox("Referee (red-card risk)", ["(unknown)", *referees]) if referees else "(unknown)"
 
     if st.button("Run simulation", type="primary"):
         if sim_home == sim_away:
             st.error("Pick two different teams.")
             st.stop()
-        res = analytics.simulate(sim_home, sim_away, midfield_shift=shift, home_absent=home_out, away_absent=away_out)
+        res = analytics.simulate(
+            sim_home,
+            sim_away,
+            midfield_shift=shift,
+            possession_shift=float(poss_shift),
+            home_absent=home_out,
+            away_absent=away_out,
+            referee=None if referee == "(unknown)" else referee,
+        )
+        if res["expected_possession"]:
+            st.caption(
+                f"Expected possession: {sim_home} {res['expected_possession']['home']:.0%} - "
+                f"{res['expected_possession']['away']:.0%} {sim_away} "
+                f"(normally {res['expected_possession']['home_baseline']:.0%} for {sim_home})"
+            )
         o = res["outcome"]
         c1, c2, c3 = st.columns(3)
         c1.metric(f"{sim_home} win", f"{o['home_win']:.1%}")
@@ -107,7 +138,8 @@ with units_tab:
             sd = res[side]
             st.markdown(f"#### {sd['team']}: {sd['style']}")
             a, d, m = sd["attack"], sd["defence"], sd["midfield_effect"]
-            k1, k2, k3, k4 = st.columns(4)
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k5.metric("Shots on target", f"{a['mean_shots_on_target']:.1f}")
             k1.metric("Avg goals", f"{a['mean_goals']:.2f}")
             k2.metric("Scores 2+", f"{a['p_score_2_plus']:.0%}")
             k3.metric("Clean sheet", f"{d['clean_sheet_prob']:.0%}")
@@ -117,6 +149,21 @@ with units_tab:
             st.dataframe(pd.DataFrame(sd["goal_breakdown"]).T)
             if "players" in sd:
                 st.dataframe(pd.DataFrame(sd["players"]["top_scorers"]))
+        gs = res.get("game_state")
+        if gs:
+            st.markdown("**How the match unfolds** (six 15-minute game states)")
+            g1, g2, g3, g4 = st.columns(4)
+            g1.metric(f"{sim_home} scores first", f"{gs['home_scores_first']:.0%}")
+            g2.metric(f"{sim_away} scores first", f"{gs['away_scores_first']:.0%}")
+            g3.metric(f"{sim_home} red card", f"{gs['p_home_red_card']:.1%}")
+            g4.metric(f"{sim_away} red card", f"{gs['p_away_red_card']:.1%}")
+            st.caption("Expected goals per 15-minute period")
+            st.bar_chart(pd.DataFrame(gs["goals_by_period"]))
+        mk = res["markets"]
+        st.markdown(f"**Asian lines** (fair odds) | Over 2.5: {mk['over_2_5']:.1%} | BTTS: {mk['btts']:.1%}")
+        m1, m2 = st.columns(2)
+        m1.dataframe(pd.DataFrame(mk["asian_handicap_home"]).set_index("line")[["win", "push", "loss", "fair_odds"]])
+        m2.dataframe(pd.DataFrame(mk["goal_lines_over"]).set_index("line")[["fair_odds", "under_fair_odds"]])
         for note in res["tactical_notes"]:
             st.info(note)
         st.markdown("**Midfield sensitivity**")

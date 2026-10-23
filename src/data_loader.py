@@ -11,7 +11,46 @@ from src.names import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
-OPTIONAL_NUMERIC_COLS = ("HS", "AS", "HST", "AST", "B365H", "B365D", "B365A")
+OPTIONAL_NUMERIC_COLS = (
+    "HS",
+    "AS",
+    "HST",
+    "AST",
+    "HC",
+    "AC",
+    "HF",
+    "AF",
+    "HCC",
+    "ACC",
+    "HPoss",
+    "APoss",
+    "B365H",
+    "B365D",
+    "B365A",
+    "HY",
+    "AY",
+    "HR",
+    "AR",
+    "HxG",
+    "AxG",
+    "HnpxG",
+    "AnpxG",
+    "HPSxG",
+    "APSxG",
+    "HPKatt",
+    "APKatt",
+    "HPK",
+    "APK",
+    "PSCH",
+    "PSCD",
+    "PSCA",
+    "AvgH",
+    "AvgD",
+    "AvgA",
+    "AvgCH",
+    "AvgCD",
+    "AvgCA",
+)
 
 
 def parse_match_dates(dates: pd.Series) -> pd.Series:

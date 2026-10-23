@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.context import latest_change_before
+from src.game_state import DisciplineModel
 from src.names import normalize_team_name
 from src.players import PlayerRatings
 from src.simulation import MatchSimulator
@@ -17,10 +19,22 @@ from src.team_ratings import TeamUnitRatings, season_timeline
 class TeamAnalytics:
     """Rates each team's attack, midfield and defence, profiles tactics, and simulates matchups."""
 
-    def __init__(self, matches: pd.DataFrame, players: pd.DataFrame | None = None, **simulator_kwargs: Any):
+    def __init__(
+        self,
+        matches: pd.DataFrame,
+        players: pd.DataFrame | None = None,
+        manager_changes: dict[str, list[pd.Timestamp]] | None = None,
+        **simulator_kwargs: Any,
+    ):
         self.matches = matches
-        self.ratings = TeamUnitRatings().fit(matches)
-        self.profiles = tactical_profiles(matches)
+        latest = pd.to_datetime(matches["Date"]).max()
+        current = latest_change_before(manager_changes or {}, latest)
+        self.manager_changes = current
+        self.ratings = TeamUnitRatings().fit(matches, manager_changes=current)
+        self.discipline = DisciplineModel().fit(matches)
+        # A new manager's style replaces the old one: profile only the matches since the appointment
+        self.profiles = tactical_profiles(matches, since=current)
+        simulator_kwargs.setdefault("discipline", self.discipline)
         self.players = PlayerRatings(players) if players is not None else None
         self.simulator = MatchSimulator(self.ratings, self.players, **simulator_kwargs)
 
@@ -31,6 +45,28 @@ class TeamAnalytics:
         matches = DataLoader().load_csv_safely(matches_csv)
         players = pd.read_csv(players_csv) if players_csv and Path(players_csv).exists() else None
         return cls(matches, players, **kwargs)
+
+    @property
+    def competitions(self) -> list[str]:
+        """Competitions in the data, domestic league first (empty without a Competition column)."""
+        if "Competition" not in self.matches:
+            return []
+        return list(self.matches["Competition"].dropna().value_counts().index)
+
+    def teams_in(self, competition: str | None = None) -> list[str]:
+        """Clubs that played in `competition` (all clubs when None)."""
+        if not competition:
+            return self.teams
+        if competition not in self.competitions:
+            raise ValueError(f"Unknown competition {competition!r}; available: {self.competitions}")
+        sub = self.matches[self.matches["Competition"] == competition]
+        clubs = set(sub["HomeTeam"].map(normalize_team_name)) | set(sub["AwayTeam"].map(normalize_team_name))
+        return sorted(t for t in self.teams if t in clubs)
+
+    def league_table(self, competition: str | None = None) -> pd.DataFrame:
+        """Unit ratings on the common all-competition scale, optionally limited to one competition's clubs."""
+        table = self.ratings.league_table()
+        return table.loc[[t for t in table.index if t in set(self.teams_in(competition))]]
 
     @property
     def teams(self) -> list[str]:

@@ -16,10 +16,11 @@ from sklearn.metrics import log_loss
 from sklearn.model_selection import TimeSeriesSplit
 
 from src.config import DEFAULT_MODEL_PATH, MODEL_CONFIG
+from src.context import FixtureCalendar, latest_change_before
 from src.dixon_coles import TimeDecayedDixonColes, walk_forward_dc_probs
 from src.evaluate import TARGET_MAP, evaluate_predictions
 from src.features import DC_COLS, FEATURE_COLS, MARKET_COLS, FeatureBuilder
-from src.market import compute_kelly_edge, odds_are_valid
+from src.market import asian_markets, compute_kelly_edge, odds_are_valid
 from src.names import normalize_team_name
 
 logger = logging.getLogger(__name__)
@@ -71,14 +72,20 @@ class MatchPredictorEngine:
     def teams(self) -> list[str]:
         return list(self.dc_model.teams_)
 
-    def fit(self, df: pd.DataFrame) -> dict[str, Any]:
+    def fit(
+        self,
+        df: pd.DataFrame,
+        calendar: FixtureCalendar | None = None,
+        manager_changes: dict[str, list[pd.Timestamp]] | None = None,
+    ) -> dict[str, Any]:
         """Walk-forward CV to pick the blend weight and measure skill, then a final fit on all data."""
         data = df.copy()
         data["Date"] = pd.to_datetime(data["Date"])
         data = data.sort_values("Date", kind="stable").reset_index(drop=True)
 
         logger.info("Computing walk-forward Dixon-Coles probabilities for %d matches...", len(data))
-        dc_probs = walk_forward_dc_probs(data)
+        dc_probs = walk_forward_dc_probs(data, manager_changes=manager_changes)
+        self.feature_builder = FeatureBuilder(calendar=calendar, manager_changes=manager_changes)
 
         logger.info("Engineering chronological Elo, rolling form, and de-vigged market features...")
         feat_df = self.feature_builder.transform_historical(data, dc_probs=dc_probs)
@@ -127,7 +134,9 @@ class MatchPredictorEngine:
             self.cv_metrics_["bookmaker_market"] = evaluate_predictions(y[mask], mkt_all[mask])
 
         logger.info("Fitting final models on %d matches...", len(data))
-        self.dc_model = TimeDecayedDixonColes().fit(data)
+        self.dc_model = TimeDecayedDixonColes().fit(
+            data, manager_changes=latest_change_before(manager_changes or {}, data["Date"].max())
+        )
         self.ml_model = make_classifier()
         self.ml_model.fit(X, y)
         self.n_matches_ = len(data)
@@ -206,6 +215,11 @@ class MatchPredictorEngine:
             },
             "markets": {"over_2_5_prob": round(over_2_5, 4), "btts_prob": round(btts_yes, 4)},
             "top_scorelines": top_scorelines,
+            "asian_lines": asian_markets(
+                score_mat,
+                handicap_lines=(-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5),
+                total_lines=(2.0, 2.25, 2.5, 2.75, 3.0),
+            ),
             "value_bets": value_analysis,
         }
 

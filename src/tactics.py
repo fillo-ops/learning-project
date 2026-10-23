@@ -1,8 +1,8 @@
 """Tactical style profiles from match statistics.
 
-Football-Data.co.uk CSVs carry no possession or event data, so styles are inferred from
-proxies: shot volume for/against (territory), shot accuracy (chance quality), conversion,
-corners (wide play / set pieces) and fouls (physicality). Labels are descriptive heuristics.
+Uses possession share and chances created when the data has them (HPoss/APoss, HCC/ACC),
+plus shot volume, shots on target, conversion, corners and fouls. Labels are descriptive
+heuristics based on league z-scores.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ _STAT_PAIRS = {
     "sot": ("HST", "AST"),
     "corners": ("HC", "AC"),
     "fouls": ("HF", "AF"),
+    "chances": ("HCC", "ACC"),
+    "possession": ("HPoss", "APoss"),
 }
 
 
@@ -38,9 +40,20 @@ def team_match_log(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True).sort_values(["Date", "team"], kind="stable").reset_index(drop=True)
 
 
-def style_metrics(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
-    """Per-team style metrics over each team's most recent `last_n` matches (None = all)."""
+def style_metrics(
+    df: pd.DataFrame, last_n: int | None = 19, since: dict[str, pd.Timestamp] | None = None
+) -> pd.DataFrame:
+    """Per-team style metrics over each team's most recent `last_n` matches (None = all).
+
+    `since` maps team -> manager appointment date; when a team has at least
+    MIN_MATCHES_NEW_MANAGER matches since then, only those are used.
+    """
     log = team_match_log(df)
+    for team, start in (since or {}).items():
+        mine = log["team"] == team
+        recent = mine & (log["Date"] >= pd.Timestamp(start))
+        if recent.sum() >= MIN_MATCHES_NEW_MANAGER:
+            log = log[~mine | recent]
     if last_n:
         log = log.groupby("team", group_keys=False).tail(last_n)
     g = log.groupby("team")
@@ -51,12 +64,21 @@ def style_metrics(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
     out["shots_pg"] = totals["shots_for"] / n
     out["shots_conceded_pg"] = totals["shots_against"] / n
     out["shot_share"] = totals["shots_for"] / (totals["shots_for"] + totals["shots_against"])
+    out["sot_pg"] = totals["sot_for"] / n
+    out["sot_conceded_pg"] = totals["sot_against"] / n
     out["accuracy"] = totals["sot_for"] / totals["shots_for"]
     out["conversion"] = totals["goals_for"] / totals["sot_for"].replace(0, np.nan)
     out["accuracy_allowed"] = totals["sot_against"] / totals["shots_against"]
     out["conversion_allowed"] = totals["goals_against"] / totals["sot_against"].replace(0, np.nan)
     out["goals_pg"] = totals["goals_for"] / n
     out["goals_conceded_pg"] = totals["goals_against"] / n
+    if log["possession_for"].notna().any():
+        poss = log["possession_for"].where(log["possession_for"] > 1.0, log["possession_for"] * 100.0)
+        out["possession_pct"] = poss.groupby(log["team"]).mean()
+    if log["chances_for"].notna().any():
+        out["chances_pg"] = g["chances_for"].mean()
+        out["chances_conceded_pg"] = g["chances_against"].mean()
+        out["chance_share"] = g["chances_for"].sum() / (g["chances_for"].sum() + g["chances_against"].sum())
     if log["corners_for"].notna().any():
         out["corners_pg"] = g["corners_for"].mean()
     if log["fouls_for"].notna().any():
@@ -64,8 +86,16 @@ def style_metrics(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
     return out.round(3)
 
 
+MAX_TRAITS = 4
+MIN_MATCHES_NEW_MANAGER = 4
+
 _TRAITS = [
     # (metric, direction, z threshold, label)
+    ("possession_pct", +1, 0.8, "Possession-based: keeps the ball"),
+    ("possession_pct", -1, 0.8, "Direct: happy without the ball"),
+    ("chances_pg", +1, 0.8, "Creative: high chance creation"),
+    ("chances_conceded_pg", -1, 0.8, "Restricts opponent chances"),
+    ("sot_pg", +1, 0.8, "Tests the keeper often (high shots on target)"),
     ("shot_share", +1, 0.8, "Dominant: controls territory and shot volume"),
     ("shot_share", -1, 0.8, "Reactive: cedes territory"),
     ("accuracy", +1, 0.8, "Creates high-quality chances"),
@@ -80,15 +110,24 @@ _TRAITS = [
 ]
 
 
-def tactical_profiles(df: pd.DataFrame, last_n: int | None = 19) -> pd.DataFrame:
+def tactical_profiles(
+    df: pd.DataFrame, last_n: int | None = 19, since: dict[str, pd.Timestamp] | None = None
+) -> pd.DataFrame:
     """Style metrics plus league z-scores and descriptive tactical labels for every team."""
-    metrics = style_metrics(df, last_n=last_n)
+    metrics = style_metrics(df, last_n=last_n, since=since)
     z = (metrics - metrics.mean()) / metrics.std(ddof=0).replace(0, np.nan)
     labels = []
     for team in metrics.index:
-        traits = [lab for col, sign, thr, lab in _TRAITS if col in z and sign * z.at[team, col] >= thr]
-        if z.at[team, "shot_share"] <= -0.5 and z.at[team, "conversion"] >= 0.5:
-            traits.append("Counter-attacking: few shots but punishing")
+        scored = [
+            (sign * z.at[team, col], lab)
+            for col, sign, thr, lab in _TRAITS
+            if col in z and sign * z.at[team, col] >= thr
+        ]
+        # Keep the most pronounced traits so the label stays readable
+        traits = [lab for _, lab in sorted(scored, reverse=True)[:MAX_TRAITS]]
+        control = "possession_pct" if "possession_pct" in z else "shot_share"
+        if z.at[team, control] <= -0.5 and z.at[team, "conversion"] >= 0.5:
+            traits.insert(0, "Counter-attacking: few shots but punishing")
         labels.append("; ".join(traits) if traits else "Balanced")
     metrics["style"] = labels
     return metrics
@@ -99,10 +138,24 @@ def tactical_matchup_notes(profiles: pd.DataFrame, home: str, away: str) -> list
     h, a = normalize_team_name(home), normalize_team_name(away)
     p = profiles
     notes = []
-    share_gap = p.at[h, "shot_share"] - p.at[a, "shot_share"]
-    if abs(share_gap) >= 0.05:
-        leader = h if share_gap > 0 else a
-        notes.append(f"{leader} should control territory (shot share gap {abs(share_gap):.0%}).")
+    if "possession_pct" in p:
+        gap = p.at[h, "possession_pct"] - p.at[a, "possession_pct"]
+        if abs(gap) >= 5:
+            leader, other = (h, a) if gap > 0 else (a, h)
+            notes.append(
+                f"{leader} average {p.at[leader, 'possession_pct']:.0f}% possession vs {other}'s "
+                f"{p.at[other, 'possession_pct']:.0f}%: expect {leader} to dictate the ball."
+            )
+    if "chance_share" in p:
+        gap = p.at[h, "chance_share"] - p.at[a, "chance_share"]
+        if abs(gap) >= 0.05:
+            leader = h if gap > 0 else a
+            notes.append(f"{leader} win the chance-creation battle more often (chance share gap {abs(gap):.0%}).")
+    else:
+        share_gap = p.at[h, "shot_share"] - p.at[a, "shot_share"]
+        if abs(share_gap) >= 0.05:
+            leader = h if share_gap > 0 else a
+            notes.append(f"{leader} should control territory (shot share gap {abs(share_gap):.0%}).")
     for att, dfn in ((h, a), (a, h)):
         if (
             p.at[att, "accuracy"] > p["accuracy"].median()
