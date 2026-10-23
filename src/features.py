@@ -32,6 +32,15 @@ CONTEXT_COLS = ["games14_diff", "h_dead_rubber", "a_dead_rubber", "table_pts_dif
 FEATURE_COLS = ELO_COLS + FORM_COLS + CONTEXT_COLS + MARKET_COLS + DC_COLS
 
 DEFAULT_REST_DAYS = 7
+NEUTRAL_STAKES = {
+    "games_left": 0.0,
+    "pts_to_top4": 0.0,
+    "drop_margin": 0.0,
+    "pts_to_leader": 0.0,
+    "dead_rubber": 0.0,
+    "stake_gap": 0.0,
+    "points": 0.0,
+}
 
 
 def elo_goal_multiplier(goal_diff: int) -> float:
@@ -140,11 +149,16 @@ class FeatureBuilder:
         date: pd.Timestamp | None,
         mkt: tuple[float, float, float],
         dc: tuple[float, float, float],
+        league_match: bool = True,
     ) -> dict[str, float]:
         h_elo, a_elo, elo_diff, elo_exp_h = self._elo_state(h, a)
         h_gf, h_ga, h_sot, h_pts = self._get_rolling_stats(h)
         a_gf, a_ga, a_sot, a_pts = self._get_rolling_stats(a)
-        hs, as_ = self.table_.stakes(h), self.table_.stakes(a)
+        # League-table stakes only apply to league matches (a Champions League tie has its own stakes)
+        if league_match:
+            hs, as_ = self.table_.stakes(h), self.table_.stakes(a)
+        else:
+            hs = as_ = NEUTRAL_STAKES
         h_g14, a_g14 = self._games_last_14(h, date), self._games_last_14(a, date)
         return {
             "h_elo": h_elo,
@@ -181,7 +195,17 @@ class FeatureBuilder:
             "dc_prob_a": dc[2],
         }
 
-    def _update_state(self, h: str, a: str, date: pd.Timestamp, hg: int, ag: int, h_sot: float, a_sot: float) -> None:
+    def _update_state(
+        self,
+        h: str,
+        a: str,
+        date: pd.Timestamp,
+        hg: int,
+        ag: int,
+        h_sot: float,
+        a_sot: float,
+        league_match: bool = True,
+    ) -> None:
         _, _, _, elo_exp_h = self._elo_state(h, a)
         actual_h = 1.0 if hg > ag else (0.5 if hg == ag else 0.0)
         delta = self.k_factor * elo_goal_multiplier(hg - ag) * (actual_h - elo_exp_h)
@@ -196,7 +220,8 @@ class FeatureBuilder:
         self.last_played_[a] = date
         self.league_dates_.setdefault(h, []).append(date)
         self.league_dates_.setdefault(a, []).append(date)
-        self.table_.update(h, a, hg, ag)
+        if league_match:
+            self.table_.update(h, a, hg, ag)
 
     def transform_historical(self, df: pd.DataFrame, dc_probs: np.ndarray | None = None) -> pd.DataFrame:
         """Builds pre-match features for every row, replaying history in date order.
@@ -217,6 +242,11 @@ class FeatureBuilder:
         dc_probs = np.asarray(dc_probs, dtype=float)[order]
 
         self._reset()
+        # With a Competition column, the most common competition is the domestic league;
+        # other competitions (e.g. the Champions League) feed Elo, form and congestion but not the table.
+        domestic = (
+            data["Competition"].mode().iloc[0] if "Competition" in data and data["Competition"].notna().any() else None
+        )
 
         rows: list[dict[str, float]] = []
         for i, row in enumerate(data.to_dict(orient="records")):
@@ -228,15 +258,17 @@ class FeatureBuilder:
             self.last_date_ = dt
             self._apply_manager_changes(h, dt)
             self._apply_manager_changes(a, dt)
+            comp = row.get("Competition")
+            league_match = domestic is None or pd.isna(comp) or comp == domestic
             mkt = remove_bookmaker_vig(row.get("B365H"), row.get("B365D"), row.get("B365A"))
-            rows.append(self._pre_match_row(h, a, dt, mkt, tuple(dc_probs[i])))
+            rows.append(self._pre_match_row(h, a, dt, mkt, tuple(dc_probs[i]), league_match))
 
             # Update state strictly AFTER recording pre-match features
             if pd.notna(row.get("FTHG")) and pd.notna(row.get("FTAG")):
                 hg, ag = int(row["FTHG"]), int(row["FTAG"])
                 h_sot = _finite_or(row.get("HST"), max(hg, 4))
                 a_sot = _finite_or(row.get("AST"), max(ag, 3))
-                self._update_state(h, a, dt, hg, ag, h_sot, a_sot)
+                self._update_state(h, a, dt, hg, ag, h_sot, a_sot, league_match)
 
         feat_df = pd.DataFrame(rows, index=data.index)
         return pd.concat([data, feat_df], axis=1)
@@ -267,5 +299,7 @@ class FeatureBuilder:
             state = copy.deepcopy(state) if state is self else state
             state._apply_manager_changes(h, date)
             state._apply_manager_changes(a, date)
-        row = state._pre_match_row(h, a, date, mkt, (dc["H"], dc["D"], dc["A"]))
+        # Table stakes only when both clubs are in the domestic league table
+        in_league = not state.table_.points or (h in state.table_.points and a in state.table_.points)
+        row = state._pre_match_row(h, a, date, mkt, (dc["H"], dc["D"], dc["A"]), in_league)
         return pd.DataFrame([row])[FEATURE_COLS]

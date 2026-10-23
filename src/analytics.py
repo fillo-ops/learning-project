@@ -47,6 +47,28 @@ class TeamAnalytics:
         return cls(matches, players, **kwargs)
 
     @property
+    def competitions(self) -> list[str]:
+        """Competitions in the data, domestic league first (empty without a Competition column)."""
+        if "Competition" not in self.matches:
+            return []
+        return list(self.matches["Competition"].dropna().value_counts().index)
+
+    def teams_in(self, competition: str | None = None) -> list[str]:
+        """Clubs that played in `competition` (all clubs when None)."""
+        if not competition:
+            return self.teams
+        if competition not in self.competitions:
+            raise ValueError(f"Unknown competition {competition!r}; available: {self.competitions}")
+        sub = self.matches[self.matches["Competition"] == competition]
+        clubs = set(sub["HomeTeam"].map(normalize_team_name)) | set(sub["AwayTeam"].map(normalize_team_name))
+        return sorted(t for t in self.teams if t in clubs)
+
+    def league_table(self, competition: str | None = None) -> pd.DataFrame:
+        """Unit ratings on the common all-competition scale, optionally limited to one competition's clubs."""
+        table = self.ratings.league_table()
+        return table.loc[[t for t in table.index if t in set(self.teams_in(competition))]]
+
+    @property
     def teams(self) -> list[str]:
         return list(self.ratings.teams_)
 

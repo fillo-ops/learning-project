@@ -116,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--players", default=str(DEFAULT_PLAYERS_PATH), help="Player stats CSV")
     parser.add_argument("--team", help="Print the season unit report for this team instead")
     parser.add_argument("--league", action="store_true", help="Print unit ratings for every team")
+    parser.add_argument("--competition", help='With --league: only clubs in this competition, e.g. "Champions League"')
     parser.add_argument("--json", action="store_true", help="Print raw JSON")
     parser.add_argument("--referee", help="Referee name (scales red-card risk if the data has a Referee column)")
     parser.add_argument("--static", action="store_true", help="Single full-match draw instead of 15-minute game states")
@@ -126,7 +127,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.league:
-            print(analytics.ratings.league_table().to_string())
+            if analytics.competitions:
+                print(f"Competitions in the data: {', '.join(analytics.competitions)}")
+            print(analytics.league_table(args.competition).to_string())
             print("\nStyles:")
             print(analytics.profiles["style"].to_string())
             return 0

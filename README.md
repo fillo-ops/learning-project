@@ -55,6 +55,17 @@ Optional context files in `data/`:
 * `fixtures.csv` (`Date, Team, Competition`): cup and European games, so rest days and games-in-14-days count every competition.
 * `managers.csv` (`Team, Date`): appointments. Older matches of that team are down-weighted in the ratings, rolling form resets, and the tactical profile only uses matches under the new manager.
 
+## 🏆 Champions League
+The demo data covers the 20 Premier League clubs **plus the 36 clubs of the 2025/26 Champions League league phase** (30 from outside England), 50 clubs in all:
+
+* Each season includes a full Champions League in the current format: an 8-match Swiss league phase (no repeated opponents, 4 home / 4 away), knockout play-off, round of 16, quarter-finals, semi-finals and a neutral-venue final. Rows carry `Competition` and `Stage` columns.
+* Ratings are fitted on **all competitions together**, so clubs from different leagues share one scale through their European meetings. Indices are relative to the average of all clubs in the data.
+* Champions League matches update Elo, form and fixture congestion, but not the Premier League table.
+* Club name aliases cover common spellings (`Bayern München`, `PSG`, `Inter Milan`, `Sporting Lisbon`, `FC København`...).
+* Filter by competition: `python -m scripts.simulate --league --competition "Champions League"`, the API's `/competitions`, `/teams?competition=...` and `/units?competition=...`, or the dashboard's **Competition** selector.
+
+Clubs from outside England only play about 10 European matches a season in this data, so their ratings are noisier than Premier League clubs'. With real data, add their domestic league files too, with a `Competition` column, for sharper ratings. Football-Data.co.uk has no Champions League files; results can be imported from e.g. openfootball as a CSV with `Competition = "Champions League"`. The club list and demo strengths live in `src/competitions.py`; update them for a new season. `python -m scripts.make_synthetic --league-only` generates the old Premier-League-only demo.
+
 ## 🎲 Game-State Simulation
 Matches are simulated in six 15-minute blocks (`src/game_state.py`):
 * **Scoreline effects**: a leading side creates fewer but better chances (sits deeper, counters); a trailing side creates more, lower-quality chances. Multipliers are in `GAME_STATE_CONFIG`. They are literature-based priors: minute-level data would be needed to fit them.
@@ -129,6 +140,7 @@ pytest                                        # test suite
 │   ├── simulation.py        # Monte Carlo matchup simulator
 │   ├── game_state.py        # 15-minute game states, red cards, discipline model
 │   ├── context.py           # League table stakes, fixture congestion, seasons, manager changes
+│   ├── competitions.py      # Champions League clubs, league-phase draw, standings
 │   ├── validation.py        # Data schema and sanity checks
 │   ├── analytics.py         # TeamAnalytics facade over the above
 │   └── pipeline.py          # Training pipeline & ablation study

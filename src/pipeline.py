@@ -39,7 +39,9 @@ def load_or_create_dataset(csv_path: Path = DEFAULT_CSV_PATH) -> pd.DataFrame:
     if not csv_path.exists():
         logger.info("No CSV found at %s. Generating 3 synthetic seasons...", csv_path)
         csv_path.parent.mkdir(parents=True, exist_ok=True)
-        generate_synthetic_matches(n_seasons=3).to_csv(csv_path, index=False, date_format="%Y-%m-%d")
+        generate_synthetic_matches(n_seasons=3, include_champions_league=True).to_csv(
+            csv_path, index=False, date_format="%Y-%m-%d"
+        )
     return DataLoader().load_csv_safely(csv_path)
 
 

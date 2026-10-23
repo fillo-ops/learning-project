@@ -65,10 +65,17 @@ with predict_tab:
 
 with units_tab:
     analytics = get_analytics()
-    st.caption("Indices: 100 = league average; higher is better for the team. Opponent-adjusted and time-weighted.")
-    st.dataframe(analytics.ratings.league_table())
+    comps = analytics.competitions
+    competition = st.selectbox("Competition", ["All clubs", *comps]) if comps else "All clubs"
+    comp_filter = None if competition == "All clubs" else competition
+    club_list = analytics.teams_in(comp_filter)
+    st.caption(
+        "Indices: 100 = average of all clubs in the data; higher is better. Opponent-adjusted and time-weighted. "
+        "Clubs from different leagues share one scale through their Champions League meetings."
+    )
+    st.dataframe(analytics.league_table(comp_filter))
 
-    team = st.selectbox("Season report for", analytics.teams, key="report_team")
+    team = st.selectbox("Season report for", club_list, key="report_team")
     report = analytics.team_report(team)
     st.markdown(f"**Style:** {report['style']}")
     tl = pd.DataFrame(report["timeline"]).set_index("date")
@@ -83,8 +90,8 @@ with units_tab:
     st.divider()
     st.subheader("Simulate a matchup")
     s1, s2 = st.columns(2)
-    sim_home = s1.selectbox("Home", analytics.teams, index=0, key="sim_home")
-    sim_away = s2.selectbox("Away", analytics.teams, index=1, key="sim_away")
+    sim_home = s1.selectbox("Home", club_list, index=0, key="sim_home")
+    sim_away = s2.selectbox("Away", club_list, index=1, key="sim_away")
     if analytics.ratings.has_possession:
         poss_shift = st.slider("Extra possession for the home side (percentage points)", -20, 20, 0, 1)
         shift = 0.0

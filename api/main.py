@@ -43,8 +43,18 @@ def health() -> dict:
 
 
 @app.get("/teams")
-def teams() -> dict:
-    return {"teams": get_engine().teams}
+def teams(competition: str | None = Query(None, description='e.g. "Champions League"')) -> dict:
+    if competition is None:
+        return {"teams": get_engine().teams}
+    try:
+        return {"competition": competition, "teams": get_analytics().teams_in(competition)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/competitions")
+def competitions() -> dict:
+    return {"competitions": get_analytics().competitions}
 
 
 @app.get("/predict", response_model=PredictionResponse)
@@ -67,9 +77,14 @@ def predict(
 
 
 @app.get("/units", response_model=UnitRatingResponse)
-def league_units() -> dict:
-    """Attack / midfield / defence indices (100 = league average) for every team."""
-    table = get_analytics().ratings.league_table()
+def league_units(
+    competition: str | None = Query(None, description='Only clubs in this competition, e.g. "Champions League"'),
+) -> dict:
+    """Attack / midfield / defence indices (100 = average of all clubs) for every team."""
+    try:
+        table = get_analytics().league_table(competition)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"units": table.reset_index(names="team").to_dict(orient="records")}
 
 
